@@ -95,6 +95,8 @@ def admin_panel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="👥 Список юзеров и балансы", callback_data="admin_users_list")],
+            [InlineKeyboardButton(text="🚫 Управление банами", callback_data="admin_bans_menu")],
+            [InlineKeyboardButton(text="🧹 Антибот и очистка накрутки", callback_data="admin_antibot_menu")],
             [InlineKeyboardButton(text="💰 Начислить/списать баланс", callback_data="admin_change_balance")],
             [InlineKeyboardButton(text="🎁 Выдать промт пользователю", callback_data="admin_grant_prompt")],
             [InlineKeyboardButton(text="🏷 Управление промокодами", callback_data="admin_promos_menu")],
@@ -104,6 +106,53 @@ def admin_panel_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🔙 В пользовательский режим", callback_data="nav_main_menu")],
         ]
     )
+
+
+def admin_bans_menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Забанить по ID", callback_data="admin_ban_user")],
+            [InlineKeyboardButton(text="📋 Список забаненных", callback_data="admin_banned_list")],
+            [InlineKeyboardButton(text="🔙 В админ-панель", callback_data="admin_main")],
+        ]
+    )
+
+
+def admin_banned_users_list_kb(banned_users: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
+    buttons = []
+    for u in banned_users[:20]:
+        uid = u["user_id"]
+        uname = f"@{u['username']}" if u.get("username") else str(uid)
+        buttons.append([
+            InlineKeyboardButton(text=f"⛔️ {uname}", callback_data="noop"),
+            InlineKeyboardButton(text="🔓 Разбанить", callback_data=f"admin_quick_unban:{uid}"),
+        ])
+    buttons.append([InlineKeyboardButton(text="➕ Забанить ещё", callback_data="admin_ban_user")])
+    buttons.append([InlineKeyboardButton(text="🔙 В меню банов", callback_data="admin_bans_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def admin_antibot_menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔍 Сканировать накрутку (авто-поиск)", callback_data="antibot_scan")],
+            [InlineKeyboardButton(text="💀 Удалить мертвых ботов (is_blocked)", callback_data="antibot_delete_dead")],
+            [InlineKeyboardButton(text="🎯 Очистить накрутку по ID реферера", callback_data="antibot_clean_referrer")],
+            [InlineKeyboardButton(text="🗑 Удалить пользователя по ID", callback_data="antibot_delete_user")],
+            [InlineKeyboardButton(text="🔙 В админ-панель", callback_data="admin_main")],
+        ]
+    )
+
+
+def admin_scanned_bots_kb(count: int) -> InlineKeyboardMarkup:
+    buttons = []
+    if count > 0:
+        buttons.append([
+            InlineKeyboardButton(text=f"🔥 Удалить всех найденных ({count} шт.)", callback_data="antibot_purge_all_scanned")
+        ])
+    buttons.append([InlineKeyboardButton(text="🔄 Пересканировать", callback_data="antibot_scan")])
+    buttons.append([InlineKeyboardButton(text="🔙 В меню антибота", callback_data="admin_antibot_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def admin_users_kb(page: int = 0, total_pages: int = 1, only_active: bool = True) -> InlineKeyboardMarkup:

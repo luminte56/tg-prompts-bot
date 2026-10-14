@@ -1,4 +1,4 @@
-from aiogram import Router, F, Bot
+from aiogram import Router, F, Bot, BaseMiddleware
 from aiogram.types import (
     Message,
     CallbackQuery,
@@ -6,6 +6,7 @@ from aiogram.types import (
     LabeledPrice,
     FSInputFile,
     ChatMemberUpdated,
+    TelegramObject,
 )
 from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.filters.chat_member_updated import ChatMemberUpdatedFilter, KICKED, MEMBER
@@ -26,6 +27,23 @@ from states import PromoState
 from utils import calculate_final_price, get_prompt_file_info
 
 router = Router()
+
+
+class BanMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event: TelegramObject, data: dict):
+        user = data.get("event_from_user")
+        if user and user.id not in ADMIN_IDS:
+            if await db.is_user_banned(user.id):
+                if hasattr(event, "message") and event.message:
+                    await event.message.answer("⛔️ Вы заблокированы в этом боте администратором.")
+                elif hasattr(event, "answer"):
+                    await event.answer("⛔️ Вы заблокированы администратором бота.", show_alert=True)
+                return
+        return await handler(event, data)
+
+
+router.message.middleware(BanMiddleware())
+router.callback_query.middleware(BanMiddleware())
 
 
 @router.message(CommandStart())

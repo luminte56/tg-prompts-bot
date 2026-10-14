@@ -1,5 +1,7 @@
 import asyncio
 import html
+import re
+from typing import Dict, Any, List, Optional
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, FSInputFile, BufferedInputFile
 from aiogram.filters import Command
@@ -11,6 +13,10 @@ import database as db
 from keyboards import (
     admin_panel_kb,
     admin_users_kb,
+    admin_bans_menu_kb,
+    admin_banned_users_list_kb,
+    admin_antibot_menu_kb,
+    admin_scanned_bots_kb,
     admin_promos_kb,
     admin_promo_type_kb,
     admin_promos_list_kb,
@@ -24,6 +30,9 @@ from states import (
     AdminEditPriceState,
     AdminBroadcastState,
     AdminChangeBalanceState,
+    AdminBanState,
+    AdminDeleteUserState,
+    AdminCleanReferrerState,
 )
 from utils import get_prompt_file_info
 
@@ -90,7 +99,8 @@ async def render_users_page(callback: CallbackQuery, page: int = 0, only_active:
         f"📊 <b>Сводка:</b>\n"
         f"• Всего запустили бота: <b>{summary['total']}</b>\n"
         f"• 🟢 Активных (не заблокали): <b>{summary['active']}</b>\n"
-        f"• 🔴 Заблокировали бота: <b>{summary['blocked']}</b>\n\n"
+        f"• 🔴 Заблокировали бота: <b>{summary['blocked']}</b>\n"
+        f"• ⛔️ Забанено админом: <b>{summary.get('banned', 0)}</b>\n\n"
         f"🔍 Фильтр: <i>{filter_title}</i>\n"
         f"📄 Страница: <b>{page + 1} из {total_pages}</b>\n\n"
     )
@@ -102,11 +112,17 @@ async def render_users_page(callback: CallbackQuery, page: int = 0, only_active:
         for idx, u in enumerate(users, start=offset + 1):
             name = html.escape(u.get("first_name") or "Пользователь")
             uname = f"@{html.escape(u['username'])}" if u.get("username") else "без @"
-            status_badge = "🔴 Заблокировал" if u.get("is_blocked") else "🟢 Активен"
+            if u.get("is_banned"):
+                status_badge = f"⛔️ Забанен ({html.escape(u.get('ban_reason') or 'бан')})"
+            elif u.get("is_blocked"):
+                status_badge = "🔴 Заблокировал"
+            else:
+                status_badge = "🟢 Активен"
             created = str(u.get("created_at") or "")[:16]
+            ref_badge = f" | 👤 Реферер: <code>{u['referrer_id']}</code>" if u.get("referrer_id") else ""
             lines.append(
                 f"{idx}. <b>{name}</b> ({uname}) — {status_badge}\n"
-                f"   🆔 ID: <code>{u['user_id']}</code>\n"
+                f"   🆔 ID: <code>{u['user_id']}</code>{ref_badge}\n"
                 f"   ⭐️ Баланс: <b>{u.get('balance', 0)} ⭐️</b> | 👥 Рефов: <b>{u.get('referrals_count', 0)}</b> | 🛒 Покупок: <b>{u.get('purchases_count', 0)}</b>\n"
                 f"   🕒 Рег: <code>{created}</code>\n"
             )
@@ -206,17 +222,23 @@ async def cb_admin_users_export_txt(callback: CallbackQuery, bot: Bot) -> None:
 
     lines = [
         f"=== СПИСОК ПОЛЬЗОВАТЕЛЕЙ БОТА (Всего: {len(users)}) ===",
-        f"{'ID':<15} | {'СТАТУС':<12} | {'БАЛАНС':<8} | {'РЕФЫ':<6} | {'ПОКУПКИ':<8} | {'USERNAME':<20} | {'ИМЯ':<25} | {'ДАТА РЕГИСТРАЦИИ'}",
-        "-" * 120
+        f"{'ID':<15} | {'СТАТУС':<15} | {'БАЛАНС':<8} | {'РЕФЫ':<6} | {'ПОКУПКИ':<8} | {'USERNAME':<20} | {'ИМЯ':<25} | {'РЕФЕРЕР':<12} | {'ДАТА РЕГИСТРАЦИИ'}",
+        "-" * 135
     ]
 
     for u in users:
-        status_str = "BLOCKED" if u.get("is_blocked") else "ACTIVE"
+        if u.get("is_banned"):
+            status_str = f"BANNED({u.get('ban_reason') or 'ban'})"
+        elif u.get("is_blocked"):
+            status_str = "BLOCKED"
+        else:
+            status_str = "ACTIVE"
         uname = f"@{u['username']}" if u.get("username") else "NO_USERNAME"
         name = (u.get("first_name") or "NO_NAME").replace("\n", " ")
+        ref_id_str = str(u.get("referrer_id") or "-")
         lines.append(
-            f"{u['user_id']:<15} | {status_str:<12} | {u.get('balance', 0):<8} | {u.get('referrals_count', 0):<6} | "
-            f"{u.get('purchases_count', 0):<8} | {uname:<20} | {name:<25} | {u.get('created_at', '')}"
+            f"{u['user_id']:<15} | {status_str:<15} | {u.get('balance', 0):<8} | {u.get('referrals_count', 0):<6} | "
+            f"{u.get('purchases_count', 0):<8} | {uname:<20} | {name:<25} | {ref_id_str:<12} | {u.get('created_at', '')}"
         )
 
     file_content = "\n".join(lines).encode("utf-8")
@@ -227,6 +249,435 @@ async def cb_admin_users_export_txt(callback: CallbackQuery, bot: Bot) -> None:
         caption=f"📁 <b>Полная выгрузка базы пользователей</b>\nВсего пользователей: <b>{len(users)}</b>",
         parse_mode="HTML"
     )
+
+
+# -------------------- БЫСТРЫЕ КОМАНДЫ МОДЕРАЦИИ --------------------
+
+@router.message(Command("ban"))
+async def cmd_ban(message: Message) -> None:
+    if not is_admin(message.from_user.id):
+        return
+
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer("ℹ️ Использование: <code>/ban &lt;user_id&gt; [причина]</code>", parse_mode="HTML")
+        return
+
+    target_id = int(parts[1])
+    reason = parts[2] if len(parts) > 2 else "Нарушение правил / накрутка"
+
+    if target_id in ADMIN_IDS:
+        await message.answer("❌ Нельзя забанить администратора.")
+        return
+
+    ok = await db.ban_user(target_id, reason)
+    if ok:
+        await message.answer(
+            f"⛔️ <b>Пользователь <code>{target_id}</code> успешно забанен!</b>\n"
+            f"Причина: <i>{html.escape(reason)}</i>",
+            parse_mode="HTML"
+        )
+    else:
+        await message.answer(f"⚠️ Пользователь с ID <code>{target_id}</code> не найден в базе.", parse_mode="HTML")
+
+
+@router.message(Command("unban"))
+async def cmd_unban(message: Message) -> None:
+    if not is_admin(message.from_user.id):
+        return
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer("ℹ️ Использование: <code>/unban &lt;user_id&gt;</code>", parse_mode="HTML")
+        return
+
+    target_id = int(parts[1])
+    ok = await db.unban_user(target_id)
+    if ok:
+        await message.answer(f"✅ <b>Пользователь <code>{target_id}</code> успешно разбанен!</b>", parse_mode="HTML")
+    else:
+        await message.answer(f"⚠️ Пользователь с ID <code>{target_id}</code> не найден в базе.", parse_mode="HTML")
+
+
+@router.message(Command("deluser"))
+async def cmd_deluser(message: Message) -> None:
+    if not is_admin(message.from_user.id):
+        return
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer("ℹ️ Использование: <code>/deluser &lt;user_id&gt;</code>", parse_mode="HTML")
+        return
+
+    target_id = int(parts[1])
+    if target_id in ADMIN_IDS:
+        await message.answer("❌ Нельзя удалить администратора.")
+        return
+
+    ok, ref_id = await db.delete_user(target_id)
+    if ok:
+        ref_msg = f"\n👤 Счётчик рефералов у <code>{ref_id}</code> уменьшен на 1." if ref_id else ""
+        await message.answer(f"🗑 <b>Пользователь <code>{target_id}</code> полностью удалён из базы!</b>{ref_msg}", parse_mode="HTML")
+    else:
+        await message.answer(f"⚠️ Пользователь с ID <code>{target_id}</code> не найден в базе.", parse_mode="HTML")
+
+
+# -------------------- МЕНЮ УПРАВЛЕНИЯ БАНАМИ --------------------
+
+@router.callback_query(F.data == "admin_bans_menu")
+async def cb_admin_bans_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Доступ запрещен.", show_alert=True)
+        return
+
+    await state.clear()
+    await callback.answer()
+    banned = await db.get_banned_users()
+    text = (
+        f"🚫 <b>Управление банами</b>\n\n"
+        f"Всего забанено: <b>{len(banned)}</b> чел.\n\n"
+        f"Забаненные пользователи полностью блокируются на уровне middleware бота: "
+        f"они не могут просматривать каталог, вводить промокоды, покупать или получать рефералов.\n\n"
+        f"Быстрые команды в чат:\n"
+        f"• <code>/ban &lt;ID&gt; [причина]</code>\n"
+        f"• <code>/unban &lt;ID&gt;</code>\n"
+        f"• <code>/deluser &lt;ID&gt;</code>"
+    )
+    await callback.message.edit_text(text, reply_markup=admin_bans_menu_kb(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "admin_ban_user")
+async def cb_admin_ban_user(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+
+    await state.set_state(AdminBanState.waiting_for_user_id)
+    await callback.message.edit_text(
+        "🚫 <b>Блокировка пользователя</b>\n\n"
+        "Отправь цифровой <b>Telegram ID</b> пользователя, которого нужно забанить:",
+        reply_markup=cancel_kb("admin_bans_menu"),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.message(AdminBanState.waiting_for_user_id)
+async def process_ban_user_id(message: Message, state: FSMContext) -> None:
+    text = message.text.strip()
+    if not text.isdigit():
+        await message.answer("❌ ID должен содержать только цифры. Попробуй ещё раз или нажми отмену:")
+        return
+
+    target_id = int(text)
+    if target_id in ADMIN_IDS:
+        await message.answer("❌ Нельзя забанить администратора бота.")
+        return
+
+    target = await db.get_user(target_id)
+    if not target:
+        await message.answer(f"⚠️ Пользователь с ID <code>{target_id}</code> не найден в базе. Введи другой ID:")
+        return
+
+    await state.update_data(ban_user_id=target_id)
+    await state.set_state(AdminBanState.waiting_for_reason)
+    uname = f"@{target['username']}" if target.get("username") else target.get("first_name") or "Пользователь"
+    await message.answer(
+        f"👤 Выбран: <b>{html.escape(uname)}</b> (ID: <code>{target_id}</code>)\n\n"
+        f"Напиши причину бана (или отправь <code>-</code> для дефолтной причины 'Нарушение правил'):",
+        reply_markup=cancel_kb("admin_bans_menu"),
+        parse_mode="HTML"
+    )
+
+
+@router.message(AdminBanState.waiting_for_reason)
+async def process_ban_reason(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    target_id = data.get("ban_user_id")
+    await state.clear()
+
+    raw_reason = message.text.strip()
+    reason = "Нарушение правил / накрутка" if raw_reason == "-" else raw_reason
+
+    await db.ban_user(target_id, reason)
+    await message.answer(
+        f"⛔️ <b>Пользователь <code>{target_id}</code> забанен!</b>\n"
+        f"Причина: <i>{html.escape(reason)}</i>",
+        reply_markup=admin_bans_menu_kb(),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "admin_banned_list")
+async def cb_admin_banned_list(callback: CallbackQuery) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+
+    await callback.answer()
+    banned = await db.get_banned_users()
+    if not banned:
+        await callback.message.edit_text(
+            "📋 <b>Список забаненных пуст.</b>\nВ боте нет заблокированных пользователей.",
+            reply_markup=admin_bans_menu_kb(),
+            parse_mode="HTML"
+        )
+        return
+
+    text_lines = [
+        f"📋 <b>Забаненные пользователи ({len(banned)} чел.):</b>\n"
+    ]
+    for idx, u in enumerate(banned[:20], 1):
+        uname = f"@{html.escape(u['username'])}" if u.get("username") else "без @"
+        name = html.escape(u.get("first_name") or "Без имени")
+        reason = html.escape(u.get("ban_reason") or "без причины")
+        text_lines.append(
+            f"{idx}. <b>{name}</b> ({uname})\n"
+            f"   🆔 ID: <code>{u['user_id']}</code> | ⚠️ <i>{reason}</i>\n"
+        )
+
+    await callback.message.edit_text(
+        "\n".join(text_lines),
+        reply_markup=admin_banned_users_list_kb(banned),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("admin_quick_unban:"))
+async def cb_admin_quick_unban(callback: CallbackQuery) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+
+    uid = int(callback.data.split(":")[1])
+    await db.unban_user(uid)
+    await callback.answer(f"Пользователь {uid} разбанен!", show_alert=True)
+    await cb_admin_banned_list(callback)
+
+
+# -------------------- АНТИБОТ И ОЧИСТКА НАКРУТКИ --------------------
+
+def is_suspicious_account(user: Dict[str, Any]) -> tuple[bool, str]:
+    """Эвристический детектор накрученных ботов со странными никами."""
+    if user.get("purchases_count", 0) > 0:
+        return False, ""
+
+    uname = (user.get("username") or "").strip().lower()
+    first_name = (user.get("first_name") or "").strip()
+    is_blocked = user.get("is_blocked", 0)
+    has_referrer = bool(user.get("referrer_id"))
+
+    reasons = []
+
+    if is_blocked:
+        reasons.append("заблокировал бота")
+
+    if uname:
+        if re.search(r'^[a-z]{5,}\d{2,}$', uname):
+            reasons.append(f"автоген-ник @{uname}")
+        elif len(uname) >= 14 and re.search(r'\d{3,}', uname):
+            reasons.append(f"хэш-ник @{uname}")
+        elif re.search(r'bot|farm|ref|promo|boost|clicker|spam', uname):
+            reasons.append(f"подозрительный @{uname}")
+    else:
+        if not first_name or first_name in ["None", "null", "User", "Deleted Account"]:
+            reasons.append("пустое имя без @")
+        elif first_name.isdigit() or re.match(r'^[0-9_\-\.\+]+$', first_name):
+            reasons.append(f"цифровое имя '{first_name}'")
+        elif len(first_name) >= 12 and " " not in first_name and re.search(r'\d', first_name):
+            reasons.append(f"случайный набор букв '{first_name}'")
+
+    if reasons:
+        return True, ", ".join(reasons)
+
+    return False, ""
+
+
+@router.callback_query(F.data == "admin_antibot_menu")
+async def cb_admin_antibot_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Доступ запрещен.", show_alert=True)
+        return
+
+    await state.clear()
+    await callback.answer()
+    text = (
+        "🧹 <b>Антибот и очистка накрутки</b>\n\n"
+        "Инструменты для удаления накрученных аккаунтов со странными никами:\n\n"
+        "• <b>🔍 Сканировать накрутку (авто-поиск)</b> — поиск автогенерированных ников, цифровых имён и мертвых душ\n"
+        "• <b>💀 Удалить мертвых ботов</b> — удаление пользователей с <code>is_blocked = 1</code> и 0 покупок\n"
+        "• <b>🎯 Очистить накрутку по ID реферера</b> — удаление всех ботов у конкретного накрутчика с аннулированием его баланса\n"
+        "• <b>🗑 Удалить пользователя по ID</b> — полное удаление конкретного аккаунта\n\n"
+        "💡 <i>Также доступна быстрая команда:</i> <code>/deluser &lt;ID&gt;</code>"
+    )
+    await callback.message.edit_text(text, reply_markup=admin_antibot_menu_kb(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "antibot_scan")
+async def cb_antibot_scan(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+
+    await callback.answer("Сканирую базу...")
+    users = await db.get_all_users_raw()
+
+    suspicious = []
+    for u in users:
+        is_bad, reason = is_suspicious_account(u)
+        if is_bad:
+            suspicious.append((u, reason))
+
+    if not suspicious:
+        await callback.message.edit_text(
+            "✅ <b>Подозрительных накрученных пользователей не обнаружено!</b>\n\n"
+            "Все пользователи в базе имеют корректные профили либо совершали покупки.",
+            reply_markup=admin_antibot_menu_kb(),
+            parse_mode="HTML"
+        )
+        return
+
+    # Сохраняем ID найденных в FSM
+    bad_uids = [u["user_id"] for u, _ in suspicious]
+    await state.update_data(scanned_bad_uids=bad_uids)
+
+    lines = [
+        f"🚨 <b>Обнаружено подозрительных ботов/фейков: {len(suspicious)} шт.</b>\n"
+    ]
+    for idx, (u, reason) in enumerate(suspicious[:15], 1):
+        name = html.escape(u.get("first_name") or "Без имени")
+        uname = f"@{html.escape(u['username'])}" if u.get("username") else "без @"
+        lines.append(
+            f"{idx}. <b>{name}</b> ({uname})\n"
+            f"   🆔 <code>{u['user_id']}</code> | ⚠️ <i>{reason}</i>\n"
+        )
+
+    if len(suspicious) > 15:
+        lines.append(f"<i>...и ещё {len(suspicious) - 15} аккаунтов.</i>\n")
+
+    lines.append("Нажми <b>🔥 Удалить всех найденных</b>, чтобы очистить базу от этой накрутки:")
+
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=admin_scanned_bots_kb(len(suspicious)),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "antibot_purge_all_scanned")
+async def cb_antibot_purge_all_scanned(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+
+    data = await state.get_data()
+    bad_uids = data.get("scanned_bad_uids", [])
+    await state.clear()
+
+    if not bad_uids:
+        users = await db.get_all_users_raw()
+        bad_uids = [u["user_id"] for u in users if is_suspicious_account(u)[0]]
+
+    deleted_count = await db.delete_users_by_ids(bad_uids)
+    await callback.answer(f"Удалено {deleted_count} ботов!", show_alert=True)
+    await callback.message.edit_text(
+        f"💥 <b>Накрутка успешно зачищена!</b>\n\n"
+        f"🗑 Удалено фейковых пользователей: <b>{deleted_count}</b> шт.\n"
+        f"База данных очищена от мусора.",
+        reply_markup=admin_antibot_menu_kb(),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "antibot_delete_dead")
+async def cb_antibot_delete_dead(callback: CallbackQuery) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+
+    await callback.answer("Удаляю мертвых ботов...")
+    count = await db.delete_dead_bots()
+    await callback.message.edit_text(
+        f"💀 <b>Очистка мёртвых душ завершена!</b>\n\n"
+        f"Удалено аккаунтов, которые заблокировали бота и не совершили покупок: <b>{count}</b> шт.",
+        reply_markup=admin_antibot_menu_kb(),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "antibot_clean_referrer")
+async def cb_antibot_clean_referrer(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+
+    await state.set_state(AdminCleanReferrerState.waiting_for_referrer_id)
+    await callback.message.edit_text(
+        "🎯 <b>Очистка накрученных рефералов</b>\n\n"
+        "Отправь цифровой <b>Telegram ID накрутчика</b>.\n"
+        "Все его рефералы с 0 покупок будут удалены, а полученные за них бонусные Звёзды — списаны с баланса:",
+        reply_markup=cancel_kb("admin_antibot_menu"),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.message(AdminCleanReferrerState.waiting_for_referrer_id)
+async def process_clean_referrer_id(message: Message, state: FSMContext) -> None:
+    text = message.text.strip()
+    if not text.isdigit():
+        await message.answer("❌ ID должен состоять только из цифр. Попробуй ещё раз или отмени:")
+        return
+
+    ref_id = int(text)
+    await state.clear()
+
+    deleted, deducted = await db.clean_referrer_bots(ref_id)
+    await message.answer(
+        f"🎯 <b>Накрутка у пользователя <code>{ref_id}</code> ликвидирована!</b>\n\n"
+        f"🗑 Удалено накрученных ботов: <b>{deleted}</b> шт.\n"
+        f"⭐️ Списано нечестно полученных звёзд: <b>{deducted} ⭐️</b>\n"
+        f"Счётчик рефералов обнулён.",
+        reply_markup=admin_antibot_menu_kb(),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data == "antibot_delete_user")
+async def cb_antibot_delete_user(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+
+    await state.set_state(AdminDeleteUserState.waiting_for_user_id)
+    await callback.message.edit_text(
+        "🗑 <b>Удаление пользователя по ID</b>\n\n"
+        "Отправь цифровой <b>Telegram ID</b> пользователя для полного удаления из базы:",
+        reply_markup=cancel_kb("admin_antibot_menu"),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.message(AdminDeleteUserState.waiting_for_user_id)
+async def process_delete_user_id(message: Message, state: FSMContext) -> None:
+    text = message.text.strip()
+    if not text.isdigit():
+        await message.answer("❌ ID должен состоять только из цифр. Попробуй ещё раз или отмени:")
+        return
+
+    target_id = int(text)
+    if target_id in ADMIN_IDS:
+        await message.answer("❌ Нельзя удалить администратора бота.")
+        return
+
+    await state.clear()
+    ok, ref_id = await db.delete_user(target_id)
+    if ok:
+        ref_msg = f"\n👤 Счётчик рефералов у <code>{ref_id}</code> уменьшен." if ref_id else ""
+        await message.answer(
+            f"🗑 <b>Пользователь <code>{target_id}</code> успешно удалён из базы!</b>{ref_msg}",
+            reply_markup=admin_antibot_menu_kb(),
+            parse_mode="HTML"
+        )
+    else:
+        await message.answer(
+            f"⚠️ Пользователь с ID <code>{target_id}</code> не найден в базе.",
+            reply_markup=admin_antibot_menu_kb(),
+            parse_mode="HTML"
+        )
 
 
 @router.callback_query(F.data == "admin_change_balance")

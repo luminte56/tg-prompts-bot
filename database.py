@@ -73,12 +73,14 @@ async def init_db() -> None:
             )
         """)
 
-        # Миграция колонок баланса, рефералов и статуса блокировки в таблицу users
+        # Миграция колонок баланса, рефералов, блокировки и бана в таблицу users
         for col_name, col_type in [
             ("balance", "INTEGER DEFAULT 0"),
             ("referrer_id", "INTEGER DEFAULT NULL"),
             ("referrals_count", "INTEGER DEFAULT 0"),
             ("is_blocked", "INTEGER DEFAULT 0"),
+            ("is_banned", "INTEGER DEFAULT 0"),
+            ("ban_reason", "TEXT DEFAULT NULL"),
         ]:
             try:
                 await db.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
@@ -275,16 +277,18 @@ async def get_users_summary() -> Dict[str, int]:
     async with aiosqlite.connect(DB_PATH) as db:
         c_tot = await db.execute("SELECT COUNT(*) FROM users")
         total = (await c_tot.fetchone())[0]
-        c_act = await db.execute("SELECT COUNT(*) FROM users WHERE is_blocked = 0")
+        c_act = await db.execute("SELECT COUNT(*) FROM users WHERE is_blocked = 0 AND is_banned = 0")
         active = (await c_act.fetchone())[0]
         c_blk = await db.execute("SELECT COUNT(*) FROM users WHERE is_blocked = 1")
         blocked = (await c_blk.fetchone())[0]
-        return {"total": total, "active": active, "blocked": blocked}
+        c_ban = await db.execute("SELECT COUNT(*) FROM users WHERE is_banned = 1")
+        banned = (await c_ban.fetchone())[0]
+        return {"total": total, "active": active, "blocked": blocked, "banned": banned}
 
 
 async def count_users(only_active: bool = True) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
-        where_clause = "WHERE is_blocked = 0" if only_active else ""
+        where_clause = "WHERE is_blocked = 0 AND is_banned = 0" if only_active else ""
         c = await db.execute(f"SELECT COUNT(*) FROM users {where_clause}")
         return (await c.fetchone())[0]
 
@@ -292,7 +296,7 @@ async def count_users(only_active: bool = True) -> int:
 async def get_all_users_with_stats(only_active: bool = True, limit: int = 15, offset: int = 0) -> List[Dict[str, Any]]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        where_clause = "WHERE u.is_blocked = 0" if only_active else ""
+        where_clause = "WHERE u.is_blocked = 0 AND u.is_banned = 0" if only_active else ""
         query = f"""
             SELECT 
                 u.user_id, 
@@ -300,14 +304,17 @@ async def get_all_users_with_stats(only_active: bool = True, limit: int = 15, of
                 u.first_name, 
                 u.balance, 
                 u.referrals_count, 
+                u.referrer_id,
                 u.is_blocked,
+                u.is_banned,
+                u.ban_reason,
                 u.created_at,
                 u.last_seen,
                 (SELECT COUNT(*) FROM purchases p WHERE p.user_id = u.user_id) AS purchases_count,
                 (SELECT COALESCE(SUM(price_paid), 0) FROM purchases p WHERE p.user_id = u.user_id) AS total_spent
             FROM users u
             {where_clause}
-            ORDER BY u.is_blocked ASC, u.balance DESC, u.referrals_count DESC, u.created_at DESC
+            ORDER BY u.is_banned ASC, u.is_blocked ASC, u.balance DESC, u.referrals_count DESC, u.created_at DESC
             LIMIT ? OFFSET ?
         """
         cursor = await db.execute(query, (limit, offset))
@@ -325,7 +332,10 @@ async def get_all_users_export() -> List[Dict[str, Any]]:
                 u.first_name, 
                 u.balance, 
                 u.referrals_count, 
+                u.referrer_id,
                 u.is_blocked,
+                u.is_banned,
+                u.ban_reason,
                 u.created_at,
                 u.last_seen,
                 (SELECT COUNT(*) FROM purchases p WHERE p.user_id = u.user_id) AS purchases_count,
@@ -337,12 +347,154 @@ async def get_all_users_export() -> List[Dict[str, Any]]:
         return [dict(r) for r in await cursor.fetchall()]
 
 
+async def get_all_users_raw() -> List[Dict[str, Any]]:
+    """Возвращает всех пользователей со статистикой для сканера накрутки."""
+    return await get_all_users_export()
+
+
 async def get_all_user_ids(only_active: bool = False) -> List[int]:
     async with aiosqlite.connect(DB_PATH) as db:
-        where = "WHERE is_blocked = 0" if only_active else ""
+        where = "WHERE is_blocked = 0 AND is_banned = 0" if only_active else ""
         cursor = await db.execute(f"SELECT user_id FROM users {where}")
         rows = await cursor.fetchall()
         return [r[0] for r in rows]
+
+
+# -------------------- УПРАВЛЕНИЕ БАНАМИ --------------------
+
+async def ban_user(user_id: int, reason: str = "") -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+        if not await cursor.fetchone():
+            return False
+        await db.execute(
+            "UPDATE users SET is_banned = 1, ban_reason = ? WHERE user_id = ?",
+            (reason.strip() or "Нарушение правил", user_id)
+        )
+        await db.commit()
+        return True
+
+
+async def unban_user(user_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
+        if not await cursor.fetchone():
+            return False
+        await db.execute(
+            "UPDATE users SET is_banned = 0, ban_reason = NULL WHERE user_id = ?",
+            (user_id,)
+        )
+        await db.commit()
+        return True
+
+
+async def is_user_banned(user_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("SELECT is_banned FROM users WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        return bool(row[0]) if row and row[0] else False
+
+
+async def get_banned_users() -> List[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("""
+            SELECT user_id, username, first_name, ban_reason, balance, created_at, last_seen
+            FROM users
+            WHERE is_banned = 1
+            ORDER BY last_seen DESC
+        """)
+        return [dict(r) for r in await cursor.fetchall()]
+
+
+# -------------------- УДАЛЕНИЕ И ОЧИСТКА НАКРУТКИ --------------------
+
+async def delete_user(user_id: int) -> tuple[bool, Optional[int]]:
+    """Удаляет пользователя из базы и уменьшает счётчик у пригласившего."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT referrer_id FROM users WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return False, None
+        referrer_id = row["referrer_id"]
+
+        await db.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+        await db.execute("DELETE FROM purchases WHERE user_id = ?", (user_id,))
+        await db.execute("DELETE FROM promo_uses WHERE user_id = ?", (user_id,))
+        await db.execute("DELETE FROM ref_rewards WHERE user_id = ?", (user_id,))
+
+        if referrer_id:
+            await db.execute(
+                "UPDATE users SET referrals_count = MAX(0, referrals_count - 1) WHERE user_id = ?",
+                (referrer_id,)
+            )
+
+        await db.commit()
+        return True, referrer_id
+
+
+async def delete_users_by_ids(user_ids: List[int]) -> int:
+    """Пакетное удаление пользователей."""
+    if not user_ids:
+        return 0
+    deleted_count = 0
+    for uid in user_ids:
+        ok, _ = await delete_user(uid)
+        if ok:
+            deleted_count += 1
+    return deleted_count
+
+
+async def delete_dead_bots() -> int:
+    """Удаляет пользователей, которые заблокировали бота и имеют 0 покупок."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            SELECT u.user_id FROM users u
+            WHERE u.is_blocked = 1
+              AND (SELECT COUNT(*) FROM purchases p WHERE p.user_id = u.user_id) = 0
+        """)
+        rows = await cursor.fetchall()
+        uids = [r[0] for r in rows]
+
+    return await delete_users_by_ids(uids)
+
+
+async def clean_referrer_bots(referrer_id: int) -> tuple[int, int]:
+    """
+    Удаляет всех рефералов пользователя referrer_id без покупок,
+    обнуляет счётчик накрутки и списывает полученные за них звёзды.
+    Возвращает (удалено_ботов, списано_звезд).
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            SELECT u.user_id FROM users u
+            WHERE u.referrer_id = ?
+              AND (SELECT COUNT(*) FROM purchases p WHERE p.user_id = u.user_id) = 0
+        """, (referrer_id,))
+        rows = await cursor.fetchall()
+        uids = [r[0] for r in rows]
+
+    if not uids:
+        return 0, 0
+
+    deleted = await delete_users_by_ids(uids)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT COALESCE(SUM(stars_awarded), 0) FROM ref_rewards WHERE user_id = ?",
+            (referrer_id,)
+        )
+        rewards_sum = (await cursor.fetchone())[0]
+
+        await db.execute("DELETE FROM ref_rewards WHERE user_id = ?", (referrer_id,))
+        await db.execute(
+            "UPDATE users SET balance = MAX(0, balance - ?), referrals_count = 0 WHERE user_id = ?",
+            (rewards_sum, referrer_id)
+        )
+        await db.commit()
+
+    return deleted, rewards_sum
 
 
 async def get_all_prompts(active_only: bool = True) -> List[Dict[str, Any]]:

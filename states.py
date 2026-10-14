@@ -29,3 +29,16 @@ class AdminBroadcastState(StatesGroup):
 class AdminChangeBalanceState(StatesGroup):
     waiting_for_user_id = State()
     waiting_for_amount = State()
+
+
+class AdminBanState(StatesGroup):
+    waiting_for_user_id = State()
+    waiting_for_reason = State()
+
+
+class AdminDeleteUserState(StatesGroup):
+    waiting_for_user_id = State()
+
+
+class AdminCleanReferrerState(StatesGroup):
+    waiting_for_referrer_id = State()
