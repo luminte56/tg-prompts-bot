@@ -1,4 +1,5 @@
 import asyncio
+import html
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.filters import Command
@@ -73,28 +74,40 @@ async def cb_admin_cancel(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "admin_users_list")
 async def cb_admin_users_list(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
+        await callback.answer("Доступ запрещен.", show_alert=True)
         return
 
-    users = await db.get_all_users_with_stats(limit=30)
-    if not users:
-        await callback.message.edit_text("👥 В базе пока нет зарегистрированных пользователей.", reply_markup=admin_panel_kb())
-        await callback.answer()
-        return
-
-    text_lines = [
-        f"👥 **Список пользователей и балансы (топ {len(users)}):**\n"
-    ]
-    for idx, u in enumerate(users, 1):
-        uname = f"@{u['username']}" if u.get("username") else "без @"
-        name = u.get("first_name") or ""
-        text_lines.append(
-            f"{idx}. **{name}** ({uname})\n"
-            f"   🆔 ID: `{u['user_id']}`\n"
-            f"   ⭐️ Баланс: **{u.get('balance', 0)} ⭐️** | 👥 Рефов: **{u.get('referrals_count', 0)}** | 🛒 Покупок: **{u.get('purchases_count', 0)}**"
-        )
-
-    await callback.message.edit_text("\n".join(text_lines), reply_markup=admin_users_kb(), parse_mode="Markdown")
     await callback.answer()
+
+    try:
+        users = await db.get_all_users_with_stats(limit=25)
+        if not users:
+            await callback.message.edit_text(
+                "👥 <b>В базе пока нет зарегистрированных пользователей.</b>",
+                reply_markup=admin_panel_kb(),
+                parse_mode="HTML"
+            )
+            return
+
+        text_lines = [
+            f"👥 <b>Список пользователей и балансы (топ {len(users)}):</b>\n"
+        ]
+        for idx, u in enumerate(users, 1):
+            name = html.escape(u.get("first_name") or "Пользователь")
+            uname = f"@{html.escape(u['username'])}" if u.get("username") else "без @"
+            text_lines.append(
+                f"{idx}. <b>{name}</b> ({uname})\n"
+                f"   🆔 ID: <code>{u['user_id']}</code>\n"
+                f"   ⭐️ Баланс: <b>{u.get('balance', 0)} ⭐️</b> | 👥 Рефов: <b>{u.get('referrals_count', 0)}</b> | 🛒 Покупок: <b>{u.get('purchases_count', 0)}</b>\n"
+            )
+
+        await callback.message.edit_text(
+            "\n".join(text_lines),
+            reply_markup=admin_users_kb(),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await callback.message.answer(f"❌ Ошибка загрузки списка пользователей: {e}")
 
 
 @router.callback_query(F.data == "admin_change_balance")
@@ -549,29 +562,31 @@ async def process_new_price_input(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data == "admin_stats")
 async def cb_admin_stats(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
+        await callback.answer("Доступ запрещен.", show_alert=True)
         return
 
+    await callback.answer()
     stats = await db.get_stats()
     text_lines = [
-        "📊 **Статистика продаж и бота White Lord IntelLab**\n",
-        f"👥 Всего пользователей в базе: `{stats['total_users']}`",
-        f"🛒 Всего совершено покупок: `{stats['total_sales']}`",
-        f"⭐️ Всего заработано Stars: `{stats['total_revenue']} ⭐️`",
-        f"🏷 Активных промокодов: `{stats['active_promos']}`",
-        f"💎 Всего промтов в каталоге: `{stats['total_prompts']}`\n",
+        "📊 <b>Статистика продаж и бота White Lord IntelLab</b>\n",
+        f"👥 Всего пользователей в базе: <code>{stats['total_users']}</code>",
+        f"🛒 Всего совершено покупок: <code>{stats['total_sales']}</code>",
+        f"⭐️ Всего заработано Stars: <code>{stats['total_revenue']} ⭐️</code>",
+        f"🏷 Активных промокодов: <code>{stats['active_promos']}</code>",
+        f"💎 Всего промтов в каталоге: <code>{stats['total_prompts']}</code>\n",
     ]
 
     if stats["recent_purchases"]:
-        text_lines.append("🕒 **Последние покупки:**")
+        text_lines.append("🕒 <b>Последние покупки:</b>")
         for p in stats["recent_purchases"]:
-            user_lbl = f"@{p['username']}" if p.get("username") else f"ID {p['user_id']}"
-            promo_lbl = f" (промо: {p['promo_code']})" if p.get("promo_code") else ""
-            text_lines.append(f"• `{p['purchased_at'][:16]}` | {user_lbl} -> **{p['title']}** [{p['price_paid']} ⭐️]{promo_lbl}")
+            user_lbl = f"@{html.escape(p['username'])}" if p.get("username") else f"ID <code>{p['user_id']}</code>"
+            promo_lbl = f" (промо: {html.escape(p['promo_code'])})" if p.get("promo_code") else ""
+            title = html.escape(p.get("title") or "")
+            text_lines.append(f"• <code>{p['purchased_at'][:16]}</code> | {user_lbl} -> <b>{title}</b> [{p['price_paid']} ⭐️]{promo_lbl}")
     else:
         text_lines.append("🕒 Покупок пока не было.")
 
-    await callback.message.edit_text("\n".join(text_lines), reply_markup=admin_panel_kb(), parse_mode="Markdown")
-    await callback.answer()
+    await callback.message.edit_text("\n".join(text_lines), reply_markup=admin_panel_kb(), parse_mode="HTML")
 
 
 # -------------------- РАССЫЛКА --------------------
