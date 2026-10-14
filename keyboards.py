@@ -6,6 +6,7 @@ from config import ADMIN_IDS
 def main_menu_kb(user_id: int) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text="🛒 Каталог промтов", callback_data="nav_catalog")],
+        [InlineKeyboardButton(text="👥 Рефералка и баланс", callback_data="nav_referral")],
         [
             InlineKeyboardButton(text="📁 Мои покупки", callback_data="nav_my_purchases"),
             InlineKeyboardButton(text="🎟 Промокод", callback_data="nav_enter_promo"),
@@ -38,23 +39,46 @@ def prompt_card_kb(
     prompt_id: str,
     is_purchased: bool,
     final_price: int,
-    has_active_promo: bool = False
+    has_active_promo: bool = False,
+    user_balance: int = 0
 ) -> InlineKeyboardMarkup:
     buttons = []
     if is_purchased:
         buttons.append([InlineKeyboardButton(text="📥 Скачать .txt файл", callback_data=f"download_prompt:{prompt_id}")])
         buttons.append([InlineKeyboardButton(text="👀 Показать текст в чате", callback_data=f"view_text_prompt:{prompt_id}")])
     else:
+        if user_balance >= final_price and final_price > 0:
+            buttons.append([InlineKeyboardButton(text=f"💳 Оплатить с баланса ({final_price} ⭐️)", callback_data=f"buy_balance:{prompt_id}")])
+
         if final_price <= 0:
             buttons.append([InlineKeyboardButton(text="🎁 Забрать бесплатно (0 ⭐️)", callback_data=f"claim_free:{prompt_id}")])
         else:
-            buttons.append([InlineKeyboardButton(text=f"⭐️ Оплатить {final_price} ⭐️", callback_data=f"buy_prompt:{prompt_id}")])
+            buttons.append([InlineKeyboardButton(text=f"⭐️ Оплатить Stars ({final_price} ⭐️)", callback_data=f"buy_prompt:{prompt_id}")])
 
         if not has_active_promo:
             buttons.append([InlineKeyboardButton(text="🎟 Применить промокод", callback_data=f"enter_promo_for:{prompt_id}")])
 
     buttons.append([InlineKeyboardButton(text="🔙 В каталог", callback_data="nav_catalog")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def referral_menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📋 Список моих рефералов", callback_data="nav_my_referrals")],
+            [InlineKeyboardButton(text="🛒 В каталог промтов", callback_data="nav_catalog")],
+            [InlineKeyboardButton(text="🔙 Главное меню", callback_data="nav_main_menu")],
+        ]
+    )
+
+
+def referrals_list_back_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 В меню рефералки", callback_data="nav_referral")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="nav_main_menu")],
+        ]
+    )
 
 
 def my_purchases_kb(purchased_prompts: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
@@ -70,12 +94,23 @@ def my_purchases_kb(purchased_prompts: List[Dict[str, Any]]) -> InlineKeyboardMa
 def admin_panel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="👥 Список юзеров и балансы", callback_data="admin_users_list")],
+            [InlineKeyboardButton(text="💰 Начислить/списать баланс", callback_data="admin_change_balance")],
             [InlineKeyboardButton(text="🎁 Выдать промт пользователю", callback_data="admin_grant_prompt")],
             [InlineKeyboardButton(text="🏷 Управление промокодами", callback_data="admin_promos_menu")],
             [InlineKeyboardButton(text="💰 Изменить цены промтов", callback_data="admin_edit_prices")],
             [InlineKeyboardButton(text="📊 Статистика и аналитика", callback_data="admin_stats")],
             [InlineKeyboardButton(text="📢 Сделать рассылку", callback_data="admin_broadcast")],
             [InlineKeyboardButton(text="🔙 В пользовательский режим", callback_data="nav_main_menu")],
+        ]
+    )
+
+
+def admin_users_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💰 Начислить/списать баланс", callback_data="admin_change_balance")],
+            [InlineKeyboardButton(text="🔙 В админ-панель", callback_data="admin_main")],
         ]
     )
 

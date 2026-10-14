@@ -24,3 +24,8 @@ class AdminEditPriceState(StatesGroup):
 class AdminBroadcastState(StatesGroup):
     waiting_for_message = State()
     waiting_for_confirm = State()
+
+
+class AdminChangeBalanceState(StatesGroup):
+    waiting_for_user_id = State()
+    waiting_for_amount = State()

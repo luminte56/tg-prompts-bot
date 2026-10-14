@@ -8,6 +8,7 @@ from config import ADMIN_IDS
 import database as db
 from keyboards import (
     admin_panel_kb,
+    admin_users_kb,
     admin_promos_kb,
     admin_promo_type_kb,
     admin_promos_list_kb,
@@ -20,6 +21,7 @@ from states import (
     AdminPromoState,
     AdminEditPriceState,
     AdminBroadcastState,
+    AdminChangeBalanceState,
 )
 from utils import get_prompt_file_info
 
@@ -64,6 +66,117 @@ async def cb_admin_main(callback: CallbackQuery, state: FSMContext) -> None:
 async def cb_admin_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await cb_admin_main(callback, state)
+
+
+# -------------------- СПИСОК ЮЗЕРОВ И БАЛАНСЫ --------------------
+
+@router.callback_query(F.data == "admin_users_list")
+async def cb_admin_users_list(callback: CallbackQuery) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+
+    users = await db.get_all_users_with_stats(limit=30)
+    if not users:
+        await callback.message.edit_text("👥 В базе пока нет зарегистрированных пользователей.", reply_markup=admin_panel_kb())
+        await callback.answer()
+        return
+
+    text_lines = [
+        f"👥 **Список пользователей и балансы (топ {len(users)}):**\n"
+    ]
+    for idx, u in enumerate(users, 1):
+        uname = f"@{u['username']}" if u.get("username") else "без @"
+        name = u.get("first_name") or ""
+        text_lines.append(
+            f"{idx}. **{name}** ({uname})\n"
+            f"   🆔 ID: `{u['user_id']}`\n"
+            f"   ⭐️ Баланс: **{u.get('balance', 0)} ⭐️** | 👥 Рефов: **{u.get('referrals_count', 0)}** | 🛒 Покупок: **{u.get('purchases_count', 0)}**"
+        )
+
+    await callback.message.edit_text("\n".join(text_lines), reply_markup=admin_users_kb(), parse_mode="Markdown")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_change_balance")
+async def cb_admin_change_balance(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        return
+
+    await state.set_state(AdminChangeBalanceState.waiting_for_user_id)
+    await callback.message.edit_text(
+        "💰 **Начисление / списание баланса**\n\n"
+        "Введи цифровой **Telegram ID** пользователя:",
+        reply_markup=cancel_kb("admin_main"),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.message(AdminChangeBalanceState.waiting_for_user_id)
+async def process_balance_user_id(message: Message, state: FSMContext) -> None:
+    text = message.text.strip()
+    if not text.isdigit():
+        await message.answer("❌ ID должен состоять только из цифр. Попробуй ещё раз:", reply_markup=cancel_kb("admin_main"))
+        return
+
+    target_user_id = int(text)
+    user_record = await db.get_user(target_user_id)
+    if not user_record:
+        await message.answer(f"❌ Пользователь с ID `{target_user_id}` не найден в базе. Он должен хотя бы раз нажать /start в боте.", reply_markup=cancel_kb("admin_main"))
+        return
+
+    await state.update_data(target_user_id=target_user_id)
+    await state.set_state(AdminChangeBalanceState.waiting_for_amount)
+
+    current_balance = user_record.get("balance", 0)
+    u_label = f"@{user_record['username']}" if user_record.get("username") else user_record.get("first_name", "")
+    await message.answer(
+        f"👤 Пользователь: {u_label} (`{target_user_id}`)\n"
+        f"⭐️ Текущий баланс: `{current_balance} ⭐️`\n\n"
+        f"Введи сумму для изменения (например, `10` чтобы начислить 10 ⭐️, или `-5` чтобы списать):",
+        reply_markup=cancel_kb("admin_main"),
+        parse_mode="Markdown"
+    )
+
+
+@router.message(AdminChangeBalanceState.waiting_for_amount)
+async def process_balance_amount(message: Message, state: FSMContext, bot: Bot) -> None:
+    text = message.text.strip()
+    try:
+        delta = int(text)
+    except ValueError:
+        await message.answer("❌ Введи целое число (положительное для начисления, отрицательное для списания):")
+        return
+
+    data = await state.get_data()
+    target_user_id = data.get("target_user_id")
+    await state.clear()
+
+    new_balance = await db.update_user_balance(target_user_id, delta)
+
+    # Оповещаем пользователя
+    try:
+        action_word = "начислено" if delta >= 0 else "списано"
+        await bot.send_message(
+            chat_id=target_user_id,
+            text=(
+                f"💳 **Изменение баланса!**\n\n"
+                f"Администратор изменил ваш баланс: **{'+' if delta > 0 else ''}{delta} ⭐️** ({action_word}).\n"
+                f"⭐️ Ваш текущий баланс: **{new_balance} ⭐️**."
+            ),
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
+
+    await message.answer(
+        f"✅ **Баланс успешно обновлен!**\n\n"
+        f"👤 ID: `{target_user_id}`\n"
+        f"⭐️ Изменение: `{'+' if delta > 0 else ''}{delta} ⭐️`\n"
+        f"💰 Новый баланс пользователя: `{new_balance} ⭐️`",
+        reply_markup=admin_panel_kb(),
+        parse_mode="Markdown"
+    )
 
 
 # -------------------- ВЫДАЧА ПРОМТА ПОЛЬЗОВАТЕЛЮ --------------------

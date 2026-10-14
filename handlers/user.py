@@ -6,7 +6,7 @@ from aiogram.types import (
     LabeledPrice,
     FSInputFile,
 )
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.fsm.context import FSMContext
 
 from config import ADMIN_IDS
@@ -16,6 +16,8 @@ from keyboards import (
     catalog_kb,
     prompt_card_kb,
     my_purchases_kb,
+    referral_menu_kb,
+    referrals_list_back_kb,
     cancel_kb,
 )
 from states import PromoState
@@ -25,20 +27,57 @@ router = Router()
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext) -> None:
+async def cmd_start(message: Message, command: CommandObject, state: FSMContext, bot: Bot) -> None:
     await state.clear()
     user = message.from_user
-    await db.upsert_user(user.id, user.username, user.first_name)
+
+    # Обработка реферального кода
+    referrer_id = None
+    if command.args:
+        raw_args = command.args.strip()
+        if raw_args.startswith("ref_"):
+            raw_id = raw_args[4:]
+        elif raw_args.startswith("ref"):
+            raw_id = raw_args[3:]
+        else:
+            raw_id = raw_args
+        if raw_id.isdigit():
+            referrer_id = int(raw_id)
+
+    is_new, actual_ref, rewards = await db.upsert_user(user.id, user.username, user.first_name, referrer_id)
+
+    # Оповещаем пригласившего
+    if is_new and actual_ref:
+        try:
+            ref_stats = await db.get_user_ref_stats(actual_ref)
+            u_title = f"@{user.username}" if user.username else f"{user.first_name} (ID: `{user.id}`)"
+            ref_msg = (
+                f"👤 **Новый реферал!**\n\n"
+                f"По твоей ссылке присоединился: {u_title}\n"
+                f"Всего приглашено: **{ref_stats['referrals_count']}** чел."
+            )
+            if rewards:
+                for m_cnt, m_stars in rewards:
+                    ref_msg += (
+                        f"\n\n🎉 **Бонус достигнут!** За {m_cnt} рефералов тебе начислено **+{m_stars} ⭐️** на баланс!\n"
+                        f"Текущий баланс: **{ref_stats['balance']} ⭐️**"
+                    )
+            await bot.send_message(chat_id=actual_ref, text=ref_msg, parse_mode="Markdown")
+        except Exception:
+            pass
+
+    user_data = await db.get_user(user.id)
+    user_balance = user_data.get("balance", 0) if user_data else 0
 
     text = (
         f"👋 **Привет, {user.first_name or 'друг'}!**\n\n"
         f"Добро пожаловать в магазин эксклюзивных системных промтов и рабочих спецификаций для нейросетей.\n\n"
+        f"⭐️ **Твой баланс:** `{user_balance} ⭐️`\n\n"
         f"⚡️ **Что внутри:**\n"
         f"• Тюнинг и системные роли для Claude Sonnet, Gemini, Grok, DeepSeek, GLM, Qwen\n"
-        f"• Оффенсив-ресерч, Windows Internals, реверс, чистый кодинг без морализаторства и шаблонной нудятины\n"
         f"• Сверхдешевые цены — **до 35 ⭐️** за промт!\n"
-        f"• Официальная и моментальная оплата через **Telegram Stars**\n"
-        f"• Все купленные промты навсегда сохраняются в твоем личном кабинете\n\n"
+        f"• Оплата через **Telegram Stars** или **с баланса рефералов**\n"
+        f"• Рефералка: зови друзей и получай звёзды на халяву!\n\n"
         f"Выбери нужный раздел в меню ниже 👇"
     )
     await message.answer(text, reply_markup=main_menu_kb(user.id), parse_mode="Markdown")
@@ -62,13 +101,17 @@ async def show_help(target_message: Message, user_id: int, edit: bool = False) -
         f"Это официальная внутренняя валюта Telegram для покупки цифровых товаров. "
         f"При нажатии кнопки «Купить» открывается нативное окно оплаты. "
         f"Если у вас нет Stars, Telegram предложит купить их в один клик с банковской карты или баланса App Store / Google Play / Fragment.\n\n"
+        f"👥 **Как получить звёзды бесплатно?**\n"
+        f"Зайдите в раздел **«👥 Рефералка и баланс»**, скопируйте ссылку и отправьте друзьям:\n"
+        f"• 5 друзей -> **+5 ⭐️** на баланс\n"
+        f"• 10 друзей -> **+10 ⭐️** на баланс\n"
+        f"• 15 друзей -> **+15 ⭐️** на баланс\n"
+        f"Накопленные звёзды можно тратить на покупку любых промтов прямо с баланса!\n\n"
         f"📁 **Как получить купленный промт?**\n"
         f"Сразу после оплаты бот присылает исходный `.txt` файл. "
         f"Также файл в любое время доступен в разделе **«📁 Мои покупки»**.\n\n"
         f"🎟 **Как применить промокод?**\n"
         f"Нажмите кнопку **«🎟 Промокод»** в главном меню или в карточке любого промта и отправьте код в чат.\n\n"
-        f"🛠 **Как использовать промт в нейросети?**\n"
-        f"Скопируйте содержимое файла в поле «Custom Instructions / System Prompt» в настройках вашей модели, веб-интерфейсе или API.\n\n"
         f"💬 **Поддержка:** Если возникли вопросы или пожелания, обратитесь к администратору."
     )
     if edit:
@@ -81,8 +124,12 @@ async def show_help(target_message: Message, user_id: int, edit: bool = False) -
 async def cb_main_menu(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     user_id = callback.from_user.id
+    user_data = await db.get_user(user_id)
+    user_balance = user_data.get("balance", 0) if user_data else 0
+
     text = (
         f"🏠 **Главное меню**\n\n"
+        f"⭐️ Твой баланс: `{user_balance} ⭐️`\n\n"
         f"Выбирай нужный раздел ниже:"
     )
     try:
@@ -91,6 +138,68 @@ async def cb_main_menu(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.message.answer(text, reply_markup=main_menu_kb(user_id), parse_mode="Markdown")
     await callback.answer()
 
+
+# -------------------- РЕФЕРАЛКА И БАЛАНС --------------------
+
+@router.callback_query(F.data == "nav_referral")
+async def cb_referral(callback: CallbackQuery, bot: Bot) -> None:
+    user_id = callback.from_user.id
+    ref_stats = await db.get_user_ref_stats(user_id)
+
+    bot_info = await bot.get_me()
+    ref_link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
+
+    text = (
+        f"👤 **Реферальная программа и Баланс**\n\n"
+        f"⭐️ **Твой баланс:** `{ref_stats['balance']} ⭐️`\n"
+        f"👥 **Приглашено друзей:** `{ref_stats['referrals_count']} чел.`\n"
+        f"🎁 **Всего получено бонусов:** `{ref_stats['total_earned']} ⭐️`\n\n"
+        f"🔗 **Твоя персональная реферальная ссылка:**\n"
+        f"`{ref_link}`\n"
+        f"_(Нажми на ссылку, чтобы скопировать)_\n\n"
+        f"⚡️ **Бонусы за приглашения:**\n"
+        f"• За **5** рефералов -> **+5 ⭐️** на баланс\n"
+        f"• За **10** рефералов -> **+10 ⭐️** на баланс\n"
+        f"• За **15** рефералов -> **+15 ⭐️** на баланс\n"
+        f"• За **20** рефералов -> **+20 ⭐️** на баланс\n\n"
+        f"🎯 До следующей награды осталось: **{ref_stats['needed_for_next']}** реф.\n\n"
+        f"💡 **Оплата с баланса:**\n"
+        f"Звёздами с баланса можно оплачивать любые промты в каталоге — без реальных затрат!"
+    )
+    await callback.message.edit_text(text, reply_markup=referral_menu_kb(), parse_mode="Markdown")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "nav_my_referrals")
+async def cb_my_referrals(callback: CallbackQuery) -> None:
+    user_id = callback.from_user.id
+    referrals = await db.get_user_referrals(user_id, limit=20)
+
+    if not referrals:
+        await callback.message.edit_text(
+            "👥 **Список рефералов пуст**\n\n"
+            "Вы пока никого не пригласили.\n"
+            "Скопируйте реферальную ссылку и отправьте друзьям или в каналы!",
+            reply_markup=referrals_list_back_kb(),
+            parse_mode="Markdown"
+        )
+        await callback.answer()
+        return
+
+    text_lines = [
+        f"👥 **Ваши приглашённые друзья (последние {len(referrals)}):**\n"
+    ]
+    for idx, r in enumerate(referrals, 1):
+        uname = f"@{r['username']}" if r.get("username") else f"ID {r['user_id']}"
+        dt = r["created_at"][:10] if r.get("created_at") else ""
+        text_lines.append(f"{idx}. {uname} — `{dt}`")
+
+    text_lines.append("\nПродолжайте приглашать, чтобы зарабатывать звёзды на баланс!")
+    await callback.message.edit_text("\n".join(text_lines), reply_markup=referrals_list_back_kb(), parse_mode="Markdown")
+    await callback.answer()
+
+
+# -------------------- КАТАЛОГ И КАРТОЧКА ПРОМТА --------------------
 
 @router.callback_query(F.data == "nav_catalog")
 async def cb_catalog(callback: CallbackQuery, state: FSMContext) -> None:
@@ -102,8 +211,8 @@ async def cb_catalog(callback: CallbackQuery, state: FSMContext) -> None:
 
     text = (
         f"🛒 **Каталог системных промтов**\n\n"
-        f"Здесь собраны все доступные промты. Нажмите на любой, чтобы посмотреть подробное описание, размер и приобрести:\n\n"
-        f"Все цены указаны в ⭐️ Telegram Stars."
+        f"Здесь собраны все доступные промты. Нажмите на любой, чтобы посмотреть описание и приобрести:\n\n"
+        f"Все цены указаны в ⭐️ Telegram Stars. Можно оплатить картой Stars или с внутреннего баланса рефералов."
     )
     await callback.message.edit_text(
         text,
@@ -118,12 +227,15 @@ async def cb_show_prompt(callback: CallbackQuery) -> None:
     prompt_id = callback.data.split(":")[1]
     prompt = await db.get_prompt(prompt_id)
     if not prompt:
-        await callback.answer("Пromt не найден!", show_alert=True)
+        await callback.answer("Промт не найден!", show_alert=True)
         return
 
     user_id = callback.from_user.id
     is_admin = user_id in ADMIN_IDS
     has_purchased = is_admin or await db.has_user_purchased(user_id, prompt_id)
+
+    user_data = await db.get_user(user_id)
+    user_balance = user_data.get("balance", 0) if user_data else 0
 
     # Проверяем промокод
     active_promo_code = await db.get_user_active_promo(user_id)
@@ -150,6 +262,8 @@ async def cb_show_prompt(callback: CallbackQuery) -> None:
         text_lines.append(f"\n{promo_info}")
         text_lines.append(f"🔥 **Итоговая цена со скидкой:** `{final_price} ⭐️`")
 
+    text_lines.append(f"\n⭐️ **Ваш баланс:** `{user_balance} ⭐️`")
+
     if has_purchased:
         text_lines.append("\n✅ **У вас уже есть доступ к этому промту!**")
 
@@ -157,10 +271,105 @@ async def cb_show_prompt(callback: CallbackQuery) -> None:
 
     await callback.message.edit_text(
         text,
-        reply_markup=prompt_card_kb(prompt_id, has_purchased, final_price, bool(promo_data)),
+        reply_markup=prompt_card_kb(prompt_id, has_purchased, final_price, bool(promo_data), user_balance),
         parse_mode="Markdown"
     )
     await callback.answer()
+
+
+# -------------------- ОПЛАТА С БАЛАНСА --------------------
+
+@router.callback_query(F.data.startswith("buy_balance:"))
+async def cb_buy_balance(callback: CallbackQuery, bot: Bot) -> None:
+    prompt_id = callback.data.split(":")[1]
+    prompt = await db.get_prompt(prompt_id)
+    if not prompt:
+        await callback.answer("Промт не найден!", show_alert=True)
+        return
+
+    user_id = callback.from_user.id
+    if await db.has_user_purchased(user_id, prompt_id):
+        await callback.answer("Вы уже приобрели этот промт!", show_alert=True)
+        return
+
+    user_data = await db.get_user(user_id)
+    user_balance = user_data.get("balance", 0) if user_data else 0
+
+    active_promo_code = await db.get_user_active_promo(user_id)
+    promo_data = None
+    if active_promo_code:
+        valid, _, promo = await db.check_promo_eligibility(user_id, active_promo_code)
+        if valid:
+            promo_data = promo
+
+    final_price, _, _ = calculate_final_price(prompt["price"], promo_data)
+
+    if user_balance < final_price:
+        await callback.answer(
+            f"Недостаточно звёзд на балансе! Требуется: {final_price} ⭐️, у вас: {user_balance} ⭐️",
+            show_alert=True
+        )
+        return
+
+    # Списываем баланс
+    new_balance = await db.update_user_balance(user_id, -final_price)
+    promo_code = promo_data["code"] if promo_data else None
+
+    # Записываем покупку
+    await db.record_purchase(
+        user_id=user_id,
+        prompt_id=prompt_id,
+        price_paid=final_price,
+        promo_code=promo_code,
+        charge_id="BALANCE_PAYMENT"
+    )
+
+    if promo_code:
+        await db.apply_promo_usage(promo_code, user_id)
+        await db.set_user_active_promo(user_id, None)
+
+    # Отправляем файл
+    file_info = get_prompt_file_info(prompt["filename"])
+    clean_filename = f"{prompt['title'].replace('/', '_')}.txt"
+    if file_info["exists"]:
+        doc = FSInputFile(path=file_info["path"], filename=clean_filename)
+        await callback.message.answer_document(
+            document=doc,
+            caption=(
+                f"🎉 **Промт успешно оплачен с баланса!**\n\n"
+                f"💎 **{prompt['title']}**\n"
+                f"⭐️ Списано с баланса: `{final_price} ⭐️`\n"
+                f"💰 Остаток баланса: `{new_balance} ⭐️`\n\n"
+                f"Файл прикреплен выше 👆\n"
+                f"Промт навсегда добавлен в ваш раздел «📁 Мои покупки»."
+            ),
+            parse_mode="Markdown"
+        )
+    else:
+        await callback.message.answer(
+            f"✅ Промт **{prompt['title']}** оплачен с баланса ({final_price} ⭐️)!\n"
+            f"Остаток: `{new_balance} ⭐️`."
+        )
+
+    # Оповещаем админов
+    for admin_id in ADMIN_IDS:
+        try:
+            u_lbl = f"@{callback.from_user.username}" if callback.from_user.username else f"ID {user_id}"
+            await bot.send_message(
+                chat_id=admin_id,
+                text=(
+                    f"💳 **Покупка с баланса!**\n\n"
+                    f"👤 Покупатель: {u_lbl}\n"
+                    f"💎 Промт: **{prompt['title']}**\n"
+                    f"⭐️ Сумма: `{final_price} ⭐️` (с баланса)\n"
+                    f"💰 Остаток на счете юзера: `{new_balance} ⭐️`"
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+    await callback.answer("Успешно оплачено с баланса!")
 
 
 # -------------------- ПРОМОКОДЫ --------------------
@@ -224,9 +433,11 @@ async def process_promo_code_input(message: Message, state: FSMContext) -> None:
         prompt = await db.get_prompt(return_prompt_id)
         if prompt:
             final_price, _, promo_info = calculate_final_price(prompt["price"], promo)
+            user_data = await db.get_user(user_id)
+            user_balance = user_data.get("balance", 0) if user_data else 0
             await message.answer(
                 f"{text}\n\nВозвращаемся к промту **{prompt['title']}**...",
-                reply_markup=prompt_card_kb(return_prompt_id, False, final_price, True),
+                reply_markup=prompt_card_kb(return_prompt_id, False, final_price, True, user_balance),
                 parse_mode="Markdown"
             )
             return
@@ -241,7 +452,7 @@ async def cb_buy_prompt(callback: CallbackQuery, bot: Bot) -> None:
     prompt_id = callback.data.split(":")[1]
     prompt = await db.get_prompt(prompt_id)
     if not prompt:
-        await callback.answer("Пromt не найден!", show_alert=True)
+        await callback.answer("Промт не найден!", show_alert=True)
         return
 
     user_id = callback.from_user.id
@@ -290,7 +501,7 @@ async def cb_claim_free(callback: CallbackQuery) -> None:
     prompt_id = callback.data.split(":")[1]
     prompt = await db.get_prompt(prompt_id)
     if not prompt:
-        await callback.answer("Пromt не найден!", show_alert=True)
+        await callback.answer("Промт не найден!", show_alert=True)
         return
 
     user_id = callback.from_user.id
@@ -429,7 +640,7 @@ async def cb_download_prompt(callback: CallbackQuery) -> None:
     prompt_id = callback.data.split(":")[1]
     prompt = await db.get_prompt(prompt_id)
     if not prompt:
-        await callback.answer("Пromt не найден!", show_alert=True)
+        await callback.answer("Промт не найден!", show_alert=True)
         return
 
     user_id = callback.from_user.id
@@ -459,7 +670,7 @@ async def cb_view_text_prompt(callback: CallbackQuery) -> None:
     prompt_id = callback.data.split(":")[1]
     prompt = await db.get_prompt(prompt_id)
     if not prompt:
-        await callback.answer("Пromt не найден!", show_alert=True)
+        await callback.answer("Промт не найден!", show_alert=True)
         return
 
     user_id = callback.from_user.id

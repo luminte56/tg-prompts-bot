@@ -62,6 +62,28 @@ async def init_db() -> None:
             )
         """)
 
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS ref_rewards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                milestone INTEGER NOT NULL,
+                stars_awarded INTEGER NOT NULL,
+                awarded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, milestone)
+            )
+        """)
+
+        # Миграция колонок баланса и рефералов в таблицу users
+        for col_name, col_type in [
+            ("balance", "INTEGER DEFAULT 0"),
+            ("referrer_id", "INTEGER DEFAULT NULL"),
+            ("referrals_count", "INTEGER DEFAULT 0"),
+        ]:
+            try:
+                await db.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
+            except Exception:
+                pass
+
         await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_prompts_filename ON prompts(filename)")
 
         # Проверяем и накатываем дефолтные промты без создания дублей
@@ -93,17 +115,79 @@ async def init_db() -> None:
         await db.commit()
 
 
-async def upsert_user(user_id: int, username: Optional[str], first_name: Optional[str]) -> None:
+async def upsert_user(
+    user_id: int,
+    username: Optional[str],
+    first_name: Optional[str],
+    referrer_id: Optional[int] = None
+) -> tuple[bool, Optional[int], List[tuple[int, int]]]:
+    """
+    Регистрирует или обновляет пользователя.
+    Возвращает (is_new, actual_referrer_id, list_of_new_rewards [(milestone, stars), ...]).
+    """
     async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+
+        cursor = await db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+        existing = await cursor.fetchone()
+
+        if existing:
+            await db.execute("""
+                UPDATE users SET
+                    username = ?,
+                    first_name = ?,
+                    last_seen = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+            """, (username, first_name, user_id))
+            await db.commit()
+            return False, None, []
+
+        # Новый пользователь
+        valid_referrer = None
+        if referrer_id and referrer_id != user_id:
+            c_ref = await db.execute("SELECT user_id FROM users WHERE user_id = ?", (referrer_id,))
+            if await c_ref.fetchone():
+                valid_referrer = referrer_id
+
         await db.execute("""
-            INSERT INTO users (user_id, username, first_name, last_seen)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(user_id) DO UPDATE SET
-                username = excluded.username,
-                first_name = excluded.first_name,
-                last_seen = CURRENT_TIMESTAMP
-        """, (user_id, username, first_name))
+            INSERT INTO users (user_id, username, first_name, referrer_id, referrals_count, balance, last_seen)
+            VALUES (?, ?, ?, ?, 0, 0, CURRENT_TIMESTAMP)
+        """, (user_id, username, first_name, valid_referrer))
+
+        rewards_awarded = []
+
+        if valid_referrer:
+            # Увеличиваем счетчик рефералов у пригласившего
+            await db.execute("""
+                UPDATE users SET referrals_count = referrals_count + 1 WHERE user_id = ?
+            """, (valid_referrer,))
+
+            # Проверяем количество рефералов
+            c_cnt = await db.execute("SELECT referrals_count, balance FROM users WHERE user_id = ?", (valid_referrer,))
+            ref_row = await c_cnt.fetchone()
+            ref_count = ref_row["referrals_count"] if ref_row else 0
+
+            # Проверяем майлстоуны: за каждые 5 рефов выдается награда (5 рефов -> 5 звезд, 10 -> 10, 15 -> 15 и т.д.)
+            milestones = [(5, 5), (10, 10), (15, 15), (20, 20), (25, 25), (30, 30), (50, 50)]
+            for m_count, m_stars in milestones:
+                if ref_count >= m_count:
+                    # Проверяем, выдавали ли уже награду за этот майлстоун
+                    c_chk = await db.execute(
+                        "SELECT id FROM ref_rewards WHERE user_id = ? AND milestone = ?",
+                        (valid_referrer, m_count)
+                    )
+                    if not await c_chk.fetchone():
+                        await db.execute("""
+                            INSERT INTO ref_rewards (user_id, milestone, stars_awarded)
+                            VALUES (?, ?, ?)
+                        """, (valid_referrer, m_count, m_stars))
+                        await db.execute("""
+                            UPDATE users SET balance = balance + ? WHERE user_id = ?
+                        """, (m_stars, valid_referrer))
+                        rewards_awarded.append((m_count, m_stars))
+
         await db.commit()
+        return True, valid_referrer, rewards_awarded
 
 
 async def get_user(user_id: int) -> Optional[Dict[str, Any]]:
@@ -112,6 +196,91 @@ async def get_user(user_id: int) -> Optional[Dict[str, Any]]:
         cursor = await db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
         row = await cursor.fetchone()
         return dict(row) if row else None
+
+
+async def update_user_balance(user_id: int, delta: int) -> int:
+    """Изменяет баланс на delta (может быть отрицательным). Возвращает новый баланс."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            UPDATE users SET balance = MAX(0, balance + ?) WHERE user_id = ?
+        """, (delta, user_id))
+        await db.commit()
+        cursor = await db.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+
+async def set_user_balance(user_id: int, new_balance: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET balance = ? WHERE user_id = ?", (max(0, new_balance), user_id))
+        await db.commit()
+        return max(0, new_balance)
+
+
+async def get_user_referrals(user_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("""
+            SELECT user_id, username, first_name, created_at
+            FROM users
+            WHERE referrer_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+        """, (user_id, limit))
+        return [dict(r) for r in await cursor.fetchall()]
+
+
+async def get_user_ref_stats(user_id: int) -> Dict[str, Any]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT balance, referrals_count FROM users WHERE user_id = ?", (user_id,))
+        row = await cursor.fetchone()
+        balance = row["balance"] if row else 0
+        ref_count = row["referrals_count"] if row else 0
+
+        c_rew = await db.execute(
+            "SELECT COALESCE(SUM(stars_awarded), 0) FROM ref_rewards WHERE user_id = ?",
+            (user_id,)
+        )
+        total_earned = (await c_rew.fetchone())[0]
+
+        # Следующий майлстоун
+        milestones = [5, 10, 15, 20, 25, 30, 50]
+        next_m = None
+        for m in milestones:
+            if ref_count < m:
+                next_m = m
+                break
+        if not next_m:
+            next_m = ((ref_count // 5) + 1) * 5
+
+        return {
+            "balance": balance,
+            "referrals_count": ref_count,
+            "total_earned": total_earned,
+            "next_milestone": next_m,
+            "needed_for_next": max(0, next_m - ref_count)
+        }
+
+
+async def get_all_users_with_stats(limit: int = 50) -> List[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("""
+            SELECT 
+                u.user_id, 
+                u.username, 
+                u.first_name, 
+                u.balance, 
+                u.referrals_count, 
+                u.created_at,
+                (SELECT COUNT(*) FROM purchases p WHERE p.user_id = u.user_id) AS purchases_count,
+                (SELECT COALESCE(SUM(price_paid), 0) FROM purchases p WHERE p.user_id = u.user_id) AS total_spent
+            FROM users u
+            ORDER BY u.balance DESC, u.referrals_count DESC, u.created_at DESC
+            LIMIT ?
+        """, (limit,))
+        return [dict(r) for r in await cursor.fetchall()]
 
 
 async def get_all_user_ids() -> List[int]:
