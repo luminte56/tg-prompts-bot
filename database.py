@@ -1,6 +1,6 @@
 import aiosqlite
 from typing import Optional, List, Dict, Any
-from config import DB_PATH, DEFAULT_PROMPTS
+from config import DB_PATH, DEFAULT_PROMPTS, BASE_DIR
 
 
 async def init_db() -> None:
