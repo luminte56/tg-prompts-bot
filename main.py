@@ -35,7 +35,27 @@ async def set_bot_commands(bot: Bot) -> None:
     await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
 
 
+async def start_healthcheck_server() -> None:
+    port_str = os.getenv("PORT", "10000")
+    port = int(port_str) if port_str.isdigit() else 10000
+    try:
+        from aiohttp import web
+        app = web.Application()
+        app.router.add_get("/", lambda r: web.Response(text="Bot is running 24/7!"))
+        app.router.add_get("/health", lambda r: web.Response(text="OK"))
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", port)
+        await site.start()
+        logger.info(f"Healthcheck HTTP server started on port {port}")
+    except Exception as e:
+        logger.warning(f"Could not start HTTP server on port {port}: {e}")
+
+
 async def main() -> None:
+    # Запуск HTTP healthcheck сервера сразу при старте процесса
+    await start_healthcheck_server()
+
     logger.info("Инициализация базы данных...")
     await db.init_db()
 
@@ -50,19 +70,6 @@ async def main() -> None:
 
     logger.info("Бот запущен и готов к приему сообщений!")
     logger.info(f"Администраторы: {ADMIN_IDS}")
-
-    port_env = os.getenv("PORT", "0")
-    if port_env.isdigit() and int(port_env) > 0:
-        port = int(port_env)
-        from aiohttp import web
-        app = web.Application()
-        app.router.add_get("/", lambda r: web.Response(text="Bot is running 24/7!"))
-        app.router.add_get("/health", lambda r: web.Response(text="OK"))
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", port)
-        await site.start()
-        logger.info(f"Healthcheck HTTP server started on port {port}")
 
     try:
         # Сбрасываем старые вебхуки / обновления перед поллингом
