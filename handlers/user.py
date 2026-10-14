@@ -1,3 +1,6 @@
+import time
+import html
+from collections import defaultdict
 from aiogram import Router, F, Bot, BaseMiddleware
 from aiogram.types import (
     Message,
@@ -27,6 +30,9 @@ from states import PromoState
 from utils import calculate_final_price, get_prompt_file_info
 
 router = Router()
+
+# In-memory трекер времени переходов по реферальным ссылкам (referrer_id -> [ts, ...])
+ref_transitions_history = defaultdict(list)
 
 
 class BanMiddleware(BaseMiddleware):
@@ -63,6 +69,64 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
             raw_id = raw_args
         if raw_id.isdigit():
             referrer_id = int(raw_id)
+
+    # Защита от одновременной накрутки рефералов
+    if referrer_id and referrer_id != user.id:
+        existing_user = await db.get_user(user.id)
+        if not existing_user:
+            # 1. Если реферер уже заблокирован за накрутку
+            if await db.is_user_banned(referrer_id):
+                await db.upsert_user(user.id, user.username, user.first_name, None)
+                await db.ban_user(user.id, f"Автобан: переход по ссылке забаненного накрутчика (ID: {referrer_id})")
+                await message.answer("⛔️ Ссылка недействительна (аккаунт заблокирован за нарушения).")
+                return
+
+            # 2. Проверка одновременных переходов (burst окно <= 3.5 сек)
+            now = time.time()
+            recent_transitions = [t for t in ref_transitions_history[referrer_id] if now - t <= 3.5]
+            db_delta = await db.get_recent_referral_delta(referrer_id)
+
+            is_burst = (len(recent_transitions) >= 1) or (db_delta is not None and db_delta <= 3)
+
+            if is_burst:
+                interval = (now - recent_transitions[-1]) if recent_transitions else (db_delta or 0.0)
+                # Блокируем накрутчика
+                ban_reason = f"Автобан: одновременный переход по рефке (интервал {interval:.2f} сек)"
+                await db.ban_user(referrer_id, ban_reason)
+                # Чистим ботов реферера и аннулируем накрученные звёзды
+                deleted_bots, deducted_stars = await db.clean_referrer_bots(referrer_id)
+                # Регистрируем и блокируем текущего бота
+                await db.upsert_user(user.id, user.username, user.first_name, None)
+                await db.ban_user(user.id, f"Автобан: бот для накрутки рефералов (интервал {interval:.2f} сек)")
+                ref_transitions_history[referrer_id].append(now)
+
+                # Оповещаем администраторов
+                ref_info = await db.get_user(referrer_id)
+                ref_tag = f"@{ref_info['username']}" if ref_info and ref_info.get("username") else f"ID {referrer_id}"
+                bot_tag = f"@{user.username}" if user.username else f"ID {user.id}"
+                alert_text = (
+                    f"🚨 <b>ОБНАРУЖЕНА ОДНОВРЕМЕННАЯ НАКРУТКА РЕФЕРАЛОВ!</b>\n\n"
+                    f"👤 <b>Реферер (накрутчик):</b> {ref_tag} (<code>{referrer_id}</code>)\n"
+                    f"🤖 <b>Бот-реферал:</b> {bot_tag} (<code>{user.id}</code>)\n"
+                    f"⏱ <b>Интервал перехода:</b> <code>{interval:.2f} сек</code>\n\n"
+                    f"🛡 <b>Принятые меры:</b>\n"
+                    f"• Реферер <code>{referrer_id}</code> заблокирован навсегда.\n"
+                    f"• Входящий аккаунт <code>{user.id}</code> заблокирован.\n"
+                    f"• Удалено пустых рефералов: <b>{deleted_bots}</b>\n"
+                    f"• Списано звёзд с баланса: <b>{deducted_stars} ⭐️</b>"
+                )
+                for adm in ADMIN_IDS:
+                    try:
+                        await bot.send_message(chat_id=adm, text=alert_text, parse_mode="HTML")
+                    except Exception:
+                        pass
+
+                await message.answer("⛔️ Вы заблокированы за попытку одновременной накрутки рефералов.")
+                return
+
+            # Фиксируем переход в истории
+            ref_transitions_history[referrer_id].append(now)
+            ref_transitions_history[referrer_id] = [t for t in ref_transitions_history[referrer_id] if now - t <= 60.0]
 
     is_new, actual_ref, rewards = await db.upsert_user(user.id, user.username, user.first_name, referrer_id)
 

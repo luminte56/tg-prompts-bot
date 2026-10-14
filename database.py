@@ -497,6 +497,25 @@ async def clean_referrer_bots(referrer_id: int) -> tuple[int, int]:
     return deleted, rewards_sum
 
 
+async def get_recent_referral_delta(referrer_id: int) -> Optional[float]:
+    """
+    Возвращает разницу в секундах между текущим временем и последней регистрацией реферала для referrer_id.
+    Если рефералов не было, возвращает None.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            SELECT (strftime('%s', 'now') - strftime('%s', created_at)) 
+            FROM users 
+            WHERE referrer_id = ? 
+            ORDER BY created_at DESC 
+            LIMIT 1
+        """, (referrer_id,))
+        row = await cursor.fetchone()
+        if row and row[0] is not None:
+            return float(row[0])
+        return None
+
+
 async def get_all_prompts(active_only: bool = True) -> List[Dict[str, Any]]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
