@@ -326,24 +326,27 @@ async def cmd_deluser(message: Message) -> None:
 
 @router.callback_query(F.data == "admin_bans_menu")
 async def cb_admin_bans_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
     if not is_admin(callback.from_user.id):
         await callback.answer("Доступ запрещен.", show_alert=True)
         return
 
     await state.clear()
-    await callback.answer()
-    banned = await db.get_banned_users()
-    text = (
-        f"🚫 <b>Управление банами</b>\n\n"
-        f"Всего забанено: <b>{len(banned)}</b> чел.\n\n"
-        f"Забаненные пользователи полностью блокируются на уровне middleware бота: "
-        f"они не могут просматривать каталог, вводить промокоды, покупать или получать рефералов.\n\n"
-        f"Быстрые команды в чат:\n"
-        f"• <code>/ban &lt;ID&gt; [причина]</code>\n"
-        f"• <code>/unban &lt;ID&gt;</code>\n"
-        f"• <code>/deluser &lt;ID&gt;</code>"
-    )
-    await callback.message.edit_text(text, reply_markup=admin_bans_menu_kb(), parse_mode="HTML")
+    try:
+        banned = await db.get_banned_users()
+        text = (
+            f"🚫 <b>Управление банами</b>\n\n"
+            f"Всего забанено: <b>{len(banned)}</b> чел.\n\n"
+            f"Забаненные пользователи полностью блокируются на уровне middleware бота: "
+            f"они не могут просматривать каталог, вводить промокоды, покупать или получать рефералов.\n\n"
+            f"Быстрые команды в чат:\n"
+            f"• <code>/ban &lt;ID&gt; [причина]</code>\n"
+            f"• <code>/unban &lt;ID&gt;</code>\n"
+            f"• <code>/deluser &lt;ID&gt;</code>"
+        )
+        await callback.message.edit_text(text, reply_markup=admin_bans_menu_kb(), parse_mode="HTML")
+    except Exception as e:
+        await callback.message.answer(f"❌ Ошибка в меню банов: {e}")
 
 
 @router.callback_query(F.data == "admin_ban_user")
@@ -492,22 +495,25 @@ def is_suspicious_account(user: Dict[str, Any]) -> tuple[bool, str]:
 
 @router.callback_query(F.data == "admin_antibot_menu")
 async def cb_admin_antibot_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
     if not is_admin(callback.from_user.id):
         await callback.answer("Доступ запрещен.", show_alert=True)
         return
 
     await state.clear()
-    await callback.answer()
-    text = (
-        "🧹 <b>Антибот и очистка накрутки</b>\n\n"
-        "Инструменты для удаления накрученных аккаунтов со странными никами:\n\n"
-        "• <b>🔍 Сканировать накрутку (авто-поиск)</b> — поиск автогенерированных ников, цифровых имён и мертвых душ\n"
-        "• <b>💀 Удалить мертвых ботов</b> — удаление пользователей с <code>is_blocked = 1</code> и 0 покупок\n"
-        "• <b>🎯 Очистить накрутку по ID реферера</b> — удаление всех ботов у конкретного накрутчика с аннулированием его баланса\n"
-        "• <b>🗑 Удалить пользователя по ID</b> — полное удаление конкретного аккаунта\n\n"
-        "💡 <i>Также доступна быстрая команда:</i> <code>/deluser &lt;ID&gt;</code>"
-    )
-    await callback.message.edit_text(text, reply_markup=admin_antibot_menu_kb(), parse_mode="HTML")
+    try:
+        text = (
+            "🧹 <b>Антибот и очистка накрутки</b>\n\n"
+            "Инструменты для удаления накрученных аккаунтов со странными никами:\n\n"
+            "• <b>🔍 Сканировать накрутку (авто-поиск)</b> — поиск автогенерированных ников, цифровых имён и мертвых душ\n"
+            "• <b>💀 Удалить мертвых ботов</b> — удаление пользователей с <code>is_blocked = 1</code> и 0 покупок\n"
+            "• <b>🎯 Очистить накрутку по ID реферера</b> — удаление всех ботов у конкретного накрутчика с аннулированием его баланса\n"
+            "• <b>🗑 Удалить пользователя по ID</b> — полное удаление конкретного аккаунта\n\n"
+            "💡 <i>Также доступна быстрая команда:</i> <code>/deluser &lt;ID&gt;</code>"
+        )
+        await callback.message.edit_text(text, reply_markup=admin_antibot_menu_kb(), parse_mode="HTML")
+    except Exception as e:
+        await callback.message.answer(f"❌ Ошибка в меню антибота: {e}")
 
 
 @router.callback_query(F.data == "antibot_scan")
