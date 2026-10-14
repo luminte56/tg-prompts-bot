@@ -1,9 +1,10 @@
 import asyncio
 import html
 from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery, FSInputFile
+from aiogram.types import Message, CallbackQuery, FSInputFile, BufferedInputFile
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
+from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 
 from config import ADMIN_IDS
 import database as db
@@ -71,6 +72,53 @@ async def cb_admin_cancel(callback: CallbackQuery, state: FSMContext) -> None:
 
 # -------------------- СПИСОК ЮЗЕРОВ И БАЛАНСЫ --------------------
 
+PAGE_SIZE = 15
+
+
+async def render_users_page(callback: CallbackQuery, page: int = 0, only_active: bool = True) -> None:
+    summary = await db.get_users_summary()
+    total_count = await db.count_users(only_active=only_active)
+    total_pages = max(1, (total_count + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    offset = page * PAGE_SIZE
+
+    users = await db.get_all_users_with_stats(only_active=only_active, limit=PAGE_SIZE, offset=offset)
+    filter_title = "🟢 Только активные (не заблокали)" if only_active else "📋 Все пользователи (с заблокировавшими)"
+
+    header = (
+        f"👥 <b>База пользователей бота</b>\n\n"
+        f"📊 <b>Сводка:</b>\n"
+        f"• Всего запустили бота: <b>{summary['total']}</b>\n"
+        f"• 🟢 Активных (не заблокали): <b>{summary['active']}</b>\n"
+        f"• 🔴 Заблокировали бота: <b>{summary['blocked']}</b>\n\n"
+        f"🔍 Фильтр: <i>{filter_title}</i>\n"
+        f"📄 Страница: <b>{page + 1} из {total_pages}</b>\n\n"
+    )
+
+    if not users:
+        text = header + "<i>Пользователей по данному фильтру не найдено.</i>"
+    else:
+        lines = [header]
+        for idx, u in enumerate(users, start=offset + 1):
+            name = html.escape(u.get("first_name") or "Пользователь")
+            uname = f"@{html.escape(u['username'])}" if u.get("username") else "без @"
+            status_badge = "🔴 Заблокировал" if u.get("is_blocked") else "🟢 Активен"
+            created = str(u.get("created_at") or "")[:16]
+            lines.append(
+                f"{idx}. <b>{name}</b> ({uname}) — {status_badge}\n"
+                f"   🆔 ID: <code>{u['user_id']}</code>\n"
+                f"   ⭐️ Баланс: <b>{u.get('balance', 0)} ⭐️</b> | 👥 Рефов: <b>{u.get('referrals_count', 0)}</b> | 🛒 Покупок: <b>{u.get('purchases_count', 0)}</b>\n"
+                f"   🕒 Рег: <code>{created}</code>\n"
+            )
+        text = "\n".join(lines)
+
+    kb = admin_users_kb(page=page, total_pages=total_pages, only_active=only_active)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        pass
+
+
 @router.callback_query(F.data == "admin_users_list")
 async def cb_admin_users_list(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
@@ -78,36 +126,107 @@ async def cb_admin_users_list(callback: CallbackQuery) -> None:
         return
 
     await callback.answer()
-
     try:
-        users = await db.get_all_users_with_stats(limit=25)
-        if not users:
-            await callback.message.edit_text(
-                "👥 <b>В базе пока нет зарегистрированных пользователей.</b>",
-                reply_markup=admin_panel_kb(),
-                parse_mode="HTML"
-            )
-            return
-
-        text_lines = [
-            f"👥 <b>Список пользователей и балансы (топ {len(users)}):</b>\n"
-        ]
-        for idx, u in enumerate(users, 1):
-            name = html.escape(u.get("first_name") or "Пользователь")
-            uname = f"@{html.escape(u['username'])}" if u.get("username") else "без @"
-            text_lines.append(
-                f"{idx}. <b>{name}</b> ({uname})\n"
-                f"   🆔 ID: <code>{u['user_id']}</code>\n"
-                f"   ⭐️ Баланс: <b>{u.get('balance', 0)} ⭐️</b> | 👥 Рефов: <b>{u.get('referrals_count', 0)}</b> | 🛒 Покупок: <b>{u.get('purchases_count', 0)}</b>\n"
-            )
-
-        await callback.message.edit_text(
-            "\n".join(text_lines),
-            reply_markup=admin_users_kb(),
-            parse_mode="HTML"
-        )
+        await render_users_page(callback, page=0, only_active=True)
     except Exception as e:
-        await callback.message.answer(f"❌ Ошибка загрузки списка пользователей: {e}")
+        await callback.message.answer(f"❌ Ошибка загрузки списка: {e}")
+
+
+@router.callback_query(F.data.startswith("admin_users_page:"))
+async def cb_admin_users_page(callback: CallbackQuery) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Доступ запрещен.", show_alert=True)
+        return
+
+    await callback.answer()
+    parts = callback.data.split(":")
+    page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+    only_active = bool(int(parts[2])) if len(parts) > 2 and parts[2].isdigit() else True
+    await render_users_page(callback, page=page, only_active=only_active)
+
+
+@router.callback_query(F.data == "noop")
+async def cb_noop(callback: CallbackQuery) -> None:
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_users_sync_blocks")
+async def cb_admin_users_sync_blocks(callback: CallbackQuery, bot: Bot) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Доступ запрещен.", show_alert=True)
+        return
+
+    await callback.answer("Запускаю проверку блокировок...", show_alert=False)
+    status_msg = await callback.message.answer(
+        "⏳ <i>Проверяю статус блокировок пользователей через безопасный ping...</i>",
+        parse_mode="HTML"
+    )
+
+    user_ids = await db.get_all_user_ids(only_active=False)
+    checked = 0
+    blocked_count = 0
+    active_count = 0
+
+    for uid in user_ids:
+        try:
+            # Отправка action 'typing' не отправляет реальных сообщений юзеру
+            await bot.send_chat_action(chat_id=uid, action="typing")
+            await db.set_user_blocked(uid, False)
+            active_count += 1
+        except (TelegramForbiddenError, TelegramBadRequest):
+            await db.set_user_blocked(uid, True)
+            blocked_count += 1
+        except Exception:
+            pass
+
+        checked += 1
+        await asyncio.sleep(0.05)
+
+    await status_msg.edit_text(
+        f"✅ <b>Синхронизация блокировок завершена!</b>\n\n"
+        f"👥 Всего проверено: <b>{checked}</b>\n"
+        f"🟢 Активных (не заблокали): <b>{active_count}</b>\n"
+        f"🔴 Заблокировали бота: <b>{blocked_count}</b>",
+        parse_mode="HTML"
+    )
+    await render_users_page(callback, page=0, only_active=True)
+
+
+@router.callback_query(F.data == "admin_users_export_txt")
+async def cb_admin_users_export_txt(callback: CallbackQuery, bot: Bot) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Доступ запрещен.", show_alert=True)
+        return
+
+    await callback.answer()
+    users = await db.get_all_users_export()
+    if not users:
+        await callback.message.answer("👥 В базе пока нет пользователей.")
+        return
+
+    lines = [
+        f"=== СПИСОК ПОЛЬЗОВАТЕЛЕЙ БОТА (Всего: {len(users)}) ===",
+        f"{'ID':<15} | {'СТАТУС':<12} | {'БАЛАНС':<8} | {'РЕФЫ':<6} | {'ПОКУПКИ':<8} | {'USERNAME':<20} | {'ИМЯ':<25} | {'ДАТА РЕГИСТРАЦИИ'}",
+        "-" * 120
+    ]
+
+    for u in users:
+        status_str = "BLOCKED" if u.get("is_blocked") else "ACTIVE"
+        uname = f"@{u['username']}" if u.get("username") else "NO_USERNAME"
+        name = (u.get("first_name") or "NO_NAME").replace("\n", " ")
+        lines.append(
+            f"{u['user_id']:<15} | {status_str:<12} | {u.get('balance', 0):<8} | {u.get('referrals_count', 0):<6} | "
+            f"{u.get('purchases_count', 0):<8} | {uname:<20} | {name:<25} | {u.get('created_at', '')}"
+        )
+
+    file_content = "\n".join(lines).encode("utf-8")
+    doc = BufferedInputFile(file_content, filename="users_list.txt")
+    await bot.send_document(
+        chat_id=callback.message.chat.id,
+        document=doc,
+        caption=f"📁 <b>Полная выгрузка базы пользователей</b>\nВсего пользователей: <b>{len(users)}</b>",
+        parse_mode="HTML"
+    )
 
 
 @router.callback_query(F.data == "admin_change_balance")
@@ -640,6 +759,9 @@ async def cb_confirm_broadcast(callback: CallbackQuery, state: FSMContext, bot: 
             await bot.send_message(chat_id=uid, text=text_to_send, parse_mode="Markdown")
             success += 1
             await asyncio.sleep(0.05)  # Защита от флуда
+        except (TelegramForbiddenError, TelegramBadRequest):
+            blocked += 1
+            await db.set_user_blocked(uid, True)
         except Exception:
             blocked += 1
 

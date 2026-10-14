@@ -5,8 +5,10 @@ from aiogram.types import (
     PreCheckoutQuery,
     LabeledPrice,
     FSInputFile,
+    ChatMemberUpdated,
 )
 from aiogram.filters import CommandStart, Command, CommandObject
+from aiogram.filters.chat_member_updated import ChatMemberUpdatedFilter, KICKED, MEMBER
 from aiogram.fsm.context import FSMContext
 
 from config import ADMIN_IDS
@@ -734,3 +736,15 @@ async def cb_my_purchases(callback: CallbackQuery) -> None:
 async def cb_cancel_fsm(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await cb_main_menu(callback, state)
+
+
+@router.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=KICKED))
+async def on_user_blocked_bot(event: ChatMemberUpdated) -> None:
+    """Пользователь заблокировал бота."""
+    await db.set_user_blocked(event.from_user.id, True)
+
+
+@router.my_chat_member(ChatMemberUpdatedFilter(member_status_changed=MEMBER))
+async def on_user_unblocked_bot(event: ChatMemberUpdated) -> None:
+    """Пользователь разблокировал бота."""
+    await db.set_user_blocked(event.from_user.id, False)

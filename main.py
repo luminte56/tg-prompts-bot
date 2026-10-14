@@ -67,7 +67,10 @@ async def main() -> None:
     try:
         # Сбрасываем старые вебхуки / обновления перед поллингом
         await bot.delete_webhook(drop_pending_updates=True)
-        await dp.start_polling(bot)
+        await dp.start_polling(
+            bot,
+            allowed_updates=["message", "callback_query", "pre_checkout_query", "my_chat_member"]
+        )
     finally:
         await bot.session.close()
         logger.info("Сессия бота закрыта.")

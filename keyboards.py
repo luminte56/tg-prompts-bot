@@ -106,13 +106,36 @@ def admin_panel_kb() -> InlineKeyboardMarkup:
     )
 
 
-def admin_users_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="💰 Начислить/списать баланс", callback_data="admin_change_balance")],
-            [InlineKeyboardButton(text="🔙 В админ-панель", callback_data="admin_main")],
-        ]
-    )
+def admin_users_kb(page: int = 0, total_pages: int = 1, only_active: bool = True) -> InlineKeyboardMarkup:
+    buttons = []
+
+    # Кнопки пагинации
+    if total_pages > 1:
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin_users_page:{page - 1}:{1 if only_active else 0}"))
+        nav_row.append(InlineKeyboardButton(text=f"📄 {page + 1}/{total_pages}", callback_data="noop"))
+        if page < total_pages - 1:
+            nav_row.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"admin_users_page:{page + 1}:{1 if only_active else 0}"))
+        buttons.append(nav_row)
+
+    # Переключатель фильтра
+    filter_text = "📋 Показать всех (включая заблокавших)" if only_active else "🟢 Только активные (не заблокали)"
+    next_filter = 0 if only_active else 1
+    buttons.append([
+        InlineKeyboardButton(text=filter_text, callback_data=f"admin_users_page:0:{next_filter}")
+    ])
+
+    # Кнопки действий: Проверка блокировок и Скачать базу
+    buttons.append([
+        InlineKeyboardButton(text="🔄 Проверить блокировки", callback_data="admin_users_sync_blocks"),
+        InlineKeyboardButton(text="📥 Скачать базу (.txt)", callback_data="admin_users_export_txt")
+    ])
+
+    buttons.append([InlineKeyboardButton(text="💰 Начислить/списать баланс", callback_data="admin_change_balance")])
+    buttons.append([InlineKeyboardButton(text="🔙 В админ-панель", callback_data="admin_main")])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def admin_promos_kb() -> InlineKeyboardMarkup:

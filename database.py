@@ -73,11 +73,12 @@ async def init_db() -> None:
             )
         """)
 
-        # Миграция колонок баланса и рефералов в таблицу users
+        # Миграция колонок баланса, рефералов и статуса блокировки в таблицу users
         for col_name, col_type in [
             ("balance", "INTEGER DEFAULT 0"),
             ("referrer_id", "INTEGER DEFAULT NULL"),
             ("referrals_count", "INTEGER DEFAULT 0"),
+            ("is_blocked", "INTEGER DEFAULT 0"),
         ]:
             try:
                 await db.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
@@ -136,7 +137,8 @@ async def upsert_user(
                 UPDATE users SET
                     username = ?,
                     first_name = ?,
-                    last_seen = CURRENT_TIMESTAMP
+                    last_seen = CURRENT_TIMESTAMP,
+                    is_blocked = 0
                 WHERE user_id = ?
             """, (username, first_name, user_id))
             await db.commit()
@@ -150,8 +152,8 @@ async def upsert_user(
                 valid_referrer = referrer_id
 
         await db.execute("""
-            INSERT INTO users (user_id, username, first_name, referrer_id, referrals_count, balance, last_seen)
-            VALUES (?, ?, ?, ?, 0, 0, CURRENT_TIMESTAMP)
+            INSERT INTO users (user_id, username, first_name, referrer_id, referrals_count, balance, last_seen, is_blocked)
+            VALUES (?, ?, ?, ?, 0, 0, CURRENT_TIMESTAMP, 0)
         """, (user_id, username, first_name, valid_referrer))
 
         rewards_awarded = []
@@ -263,29 +265,82 @@ async def get_user_ref_stats(user_id: int) -> Dict[str, Any]:
         }
 
 
-async def get_all_users_with_stats(limit: int = 50) -> List[Dict[str, Any]]:
+async def set_user_blocked(user_id: int, is_blocked: bool = True) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET is_blocked = ? WHERE user_id = ?", (1 if is_blocked else 0, user_id))
+        await db.commit()
+
+
+async def get_users_summary() -> Dict[str, int]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        c_tot = await db.execute("SELECT COUNT(*) FROM users")
+        total = (await c_tot.fetchone())[0]
+        c_act = await db.execute("SELECT COUNT(*) FROM users WHERE is_blocked = 0")
+        active = (await c_act.fetchone())[0]
+        c_blk = await db.execute("SELECT COUNT(*) FROM users WHERE is_blocked = 1")
+        blocked = (await c_blk.fetchone())[0]
+        return {"total": total, "active": active, "blocked": blocked}
+
+
+async def count_users(only_active: bool = True) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        where_clause = "WHERE is_blocked = 0" if only_active else ""
+        c = await db.execute(f"SELECT COUNT(*) FROM users {where_clause}")
+        return (await c.fetchone())[0]
+
+
+async def get_all_users_with_stats(only_active: bool = True, limit: int = 15, offset: int = 0) -> List[Dict[str, Any]]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute("""
+        where_clause = "WHERE u.is_blocked = 0" if only_active else ""
+        query = f"""
             SELECT 
                 u.user_id, 
                 u.username, 
                 u.first_name, 
                 u.balance, 
                 u.referrals_count, 
+                u.is_blocked,
                 u.created_at,
+                u.last_seen,
                 (SELECT COUNT(*) FROM purchases p WHERE p.user_id = u.user_id) AS purchases_count,
                 (SELECT COALESCE(SUM(price_paid), 0) FROM purchases p WHERE p.user_id = u.user_id) AS total_spent
             FROM users u
-            ORDER BY u.balance DESC, u.referrals_count DESC, u.created_at DESC
-            LIMIT ?
-        """, (limit,))
+            {where_clause}
+            ORDER BY u.is_blocked ASC, u.balance DESC, u.referrals_count DESC, u.created_at DESC
+            LIMIT ? OFFSET ?
+        """
+        cursor = await db.execute(query, (limit, offset))
         return [dict(r) for r in await cursor.fetchall()]
 
 
-async def get_all_user_ids() -> List[int]:
+async def get_all_users_export() -> List[Dict[str, Any]]:
+    """Возвращает всех пользователей для экспорта в файл."""
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT user_id FROM users")
+        db.row_factory = aiosqlite.Row
+        query = """
+            SELECT 
+                u.user_id, 
+                u.username, 
+                u.first_name, 
+                u.balance, 
+                u.referrals_count, 
+                u.is_blocked,
+                u.created_at,
+                u.last_seen,
+                (SELECT COUNT(*) FROM purchases p WHERE p.user_id = u.user_id) AS purchases_count,
+                (SELECT COALESCE(SUM(price_paid), 0) FROM purchases p WHERE p.user_id = u.user_id) AS total_spent
+            FROM users u
+            ORDER BY u.created_at DESC
+        """
+        cursor = await db.execute(query)
+        return [dict(r) for r in await cursor.fetchall()]
+
+
+async def get_all_user_ids(only_active: bool = False) -> List[int]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        where = "WHERE is_blocked = 0" if only_active else ""
+        cursor = await db.execute(f"SELECT user_id FROM users {where}")
         rows = await cursor.fetchall()
         return [r[0] for r in rows]
 
