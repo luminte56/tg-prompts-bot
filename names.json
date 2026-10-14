@@ -1,0 +1,98 @@
+[
+  {
+    "id": "deepseek_v4",
+    "title": "DeepSeek V4",
+    "price": 15,
+    "filename": "deepseek.txt",
+    "description": "Разлоченный промт под DeepSeek: прямой технический стиль, чистая логика без шаблонов.",
+    "is_active": 1
+  },
+  {
+    "id": "glm_5_3",
+    "title": "GLM 5.3 Pro",
+    "price": 15,
+    "filename": "glm5.3.txt",
+    "description": "Тюнинг и промт под китайскую флагманскую модель GLM 5.3: решение сложных инженерных задач и архитектуры.",
+    "is_active": 1
+  },
+  {
+    "id": "antigravity_sonnet_4_6",
+    "title": "Antigravity Sonnet 4.6",
+    "price": 20,
+    "filename": "antigravity sonnet 4.6 (3).txt",
+    "description": "Системный промт разработчика: реверс-инжиниринг, low-level Win internals, оффенсив ресерч, без цензуры и морализаторства.",
+    "is_active": 1
+  },
+  {
+    "id": "gemini_all_web",
+    "title": "Gemini All-web models (Full)",
+    "price": 20,
+    "filename": "gemini-all(full) .txt",
+    "description": "Универсальный расширенный системный промт под всю линейку Gemini для чистого кодинга и рассуждений.",
+    "is_active": 1
+  },
+  {
+    "id": "space_bunny",
+    "title": "Space Bunny (Agent)",
+    "price": 20,
+    "filename": "space bunny.txt",
+    "description": "Операционная спецификация автономного агента-разработчика: autonomous coding & authoring.",
+    "is_active": 1
+  },
+  {
+    "id": "gpt6_astra",
+    "title": "GPT-6 Astra Edition",
+    "price": 25,
+    "filename": "GPT-6-Astra(new) (4).txt",
+    "description": "Новейший кастомный промт Astra под продвинутые модели GPT: прямой тон, исключительное качество кода.",
+    "is_active": 1
+  },
+  {
+    "id": "gpt6_1_sol",
+    "title": "GPT-6.1 Sol",
+    "price": 25,
+    "filename": "gpt-6.1-sol.txt",
+    "description": "Специализированный промт под GPT-6.1: быстрое решение сложнейших алгоритмов и системного кода.",
+    "is_active": 1
+  },
+  {
+    "id": "kimi_k3",
+    "title": "Kimi K3 2.0 Extended",
+    "price": 25,
+    "filename": "KIMI K3 2.0.txt",
+    "description": "Мощный промт для Kimi K3 2.0: огромный контекст, детальное рассуждение и глубокая аналитика.",
+    "is_active": 1
+  },
+  {
+    "id": "qwen_3_8_max",
+    "title": "Qwen 3.8 Max",
+    "price": 25,
+    "filename": "qwen 3.8 max.txt",
+    "description": "Тюнингованный промт для Qwen Max: математика, логика, строгий код без воды.",
+    "is_active": 1
+  },
+  {
+    "id": "sonnet_5_max",
+    "title": "Claude Sonnet 5 Max",
+    "price": 30,
+    "filename": "Sonnet-5-Max.txt",
+    "description": "Элитный промт под Sonnet 5 Max: максимальный уровень рассуждений, системная архитектура.",
+    "is_active": 1
+  },
+  {
+    "id": "grok_high",
+    "title": "Grok",
+    "price": 30,
+    "filename": "JBgrok.txt",
+    "description": "Полный Jailbreak-промт (23 КБ) для Grok: полный обход ограничений и прямые ответы на любые темы.",
+    "is_active": 1
+  },
+  {
+    "id": "antigravity_gemini_3_8",
+    "title": "Antigravity Gemini 3.8 Ultra",
+    "price": 35,
+    "filename": "antygravity gemini 3.8.txt",
+    "description": "Массивный ультра-промт (76 КБ) под Gemini 3.8: хардкорный код, агентная автономность, глубокая аналитика.",
+    "is_active": 1
+  }
+]
