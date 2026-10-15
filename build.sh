@@ -2,6 +2,7 @@
 set -e
 
 echo "===> [WhiteLord IntelLab] Initializing Infrlo build..."
+df -h
 export TMPDIR="${HOME}/.tmp"
 export TEMP="${HOME}/.tmp"
 export TMP="${HOME}/.tmp"
