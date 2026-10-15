@@ -51,7 +51,7 @@ async def cmd_admin(message: Message, state: FSMContext) -> None:
         return
     await state.clear()
     await message.answer(
-        "👑 **Панель управления White Lord IntelLab**\n\n"
+        "👑 **Панель управления Промты от BazedDll**\n\n"
         "Выбери необходимое действие:",
         reply_markup=admin_panel_kb(),
         parse_mode="Markdown"
@@ -65,7 +65,7 @@ async def cb_admin_main(callback: CallbackQuery, state: FSMContext) -> None:
         return
     await state.clear()
     await callback.message.edit_text(
-        "👑 **Панель управления White Lord IntelLab**\n\n"
+        "👑 **Панель управления Промты от BazedDll**\n\n"
         "Выбери необходимое действие:",
         reply_markup=admin_panel_kb(),
         parse_mode="Markdown"

@@ -155,10 +155,10 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
 
     text = (
         f"👋 **Привет, {user.first_name or 'друг'}!**\n\n"
-        f"Добро пожаловать в магазин эксклюзивных системных промтов и рабочих спецификаций для нейросетей.\n\n"
+        f"Добро пожаловать в магазин **«Промты от BazedDll»** — эксклюзивные системные промты и рабочие спецификации для нейросетей.\n\n"
         f"⭐️ **Твой баланс:** `{user_balance} ⭐️`\n\n"
         f"⚡️ **Что внутри:**\n"
-        f"• Тюнинг и системные роли для Claude Sonnet, Gemini, Grok, DeepSeek, GLM, Qwen\n"
+        f"• Тюнинг и системные роли для Claude Sonnet, Gemini 3.5, Step-5-preview, Grok, DeepSeek, GLM, Qwen\n"
         f"• Сверхдешевые цены — **до 35 ⭐️** за промт!\n"
         f"• Оплата через **Telegram Stars** или **с баланса рефералов**\n"
         f"• Рефералка: зови друзей и получай звёзды на халяву!\n\n"
