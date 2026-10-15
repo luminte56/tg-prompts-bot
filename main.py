@@ -64,10 +64,8 @@ async def keep_alive_loop() -> None:
         hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME")
         if hostname:
             url = f"https://{hostname}"
-
-    if not url:
-        logger.info("RENDER_EXTERNAL_URL не задан, фоновый самопинг выключен (локальный запуск).")
-        return
+        else:
+            url = "https://intel-asadasd12-77.onrender.com"
 
     ping_url = f"{url.rstrip('/')}/health"
     logger.info(f"Встроенный Keep-Alive пингер активирован для {ping_url}")
