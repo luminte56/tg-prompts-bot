@@ -41,8 +41,13 @@ async def start_healthcheck_server() -> None:
     try:
         from aiohttp import web
         app = web.Application()
-        app.router.add_get("/", lambda r: web.Response(text="Bot is running 24/7!"))
-        app.router.add_get("/health", lambda r: web.Response(text="OK"))
+        handler = lambda r: web.Response(text="Bot is running 24/7!", content_type="text/plain")
+        app.router.add_get("/", handler)
+        app.router.add_get("/health", handler)
+        app.router.add_get("/ping", handler)
+        app.router.add_head("/", handler)
+        app.router.add_head("/health", handler)
+        app.router.add_head("/ping", handler)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", port)
@@ -52,9 +57,40 @@ async def start_healthcheck_server() -> None:
         logger.warning(f"Could not start HTTP server on port {port}: {e}")
 
 
+async def keep_alive_loop() -> None:
+    """Фоновый самопингер для предотвращения засыпания Render Free Tier."""
+    url = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("RENDER_URL")
+    if not url:
+        hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+        if hostname:
+            url = f"https://{hostname}"
+
+    if not url:
+        logger.info("RENDER_EXTERNAL_URL не задан, фоновый самопинг выключен (локальный запуск).")
+        return
+
+    ping_url = f"{url.rstrip('/')}/health"
+    logger.info(f"Встроенный Keep-Alive пингер активирован для {ping_url}")
+    # Даем сервису 60 секунд на полную инициализацию и запуск
+    await asyncio.sleep(60)
+
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                async with session.get(ping_url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                    logger.info(f"Keep-Alive ping -> {ping_url} [status {resp.status}]")
+            except Exception as e:
+                logger.warning(f"Keep-Alive ping предупреждение: {e}")
+            # Пингуем каждые 8 минут (порог засыпания Render — 15 минут)
+            await asyncio.sleep(480)
+
+
 async def main() -> None:
-    # Запуск HTTP healthcheck сервера сразу при старте процесса
+    # 1. Запуск HTTP healthcheck сервера сразу при старте процесса
     await start_healthcheck_server()
+
+    # 2. Запуск фонового самопингера против засыпания Render
+    asyncio.create_task(keep_alive_loop())
 
     if not BOT_TOKEN or len(BOT_TOKEN) < 20 or ":" not in BOT_TOKEN:
         logger.critical("КРИТИЧЕСКАЯ ОШИБКА: BOT_TOKEN пустой или некорректный! Задайте BOT_TOKEN в переменных окружения.")
@@ -83,12 +119,20 @@ async def main() -> None:
     logger.info(f"Администраторы: {ADMIN_IDS}")
 
     try:
-        # Сбрасываем старые вебхуки / обновления перед поллингом
-        await bot.delete_webhook(drop_pending_updates=True)
-        await dp.start_polling(
-            bot,
-            allowed_updates=["message", "callback_query", "pre_checkout_query", "my_chat_member"]
-        )
+        # Сбрасываем старые вебхуки, но сохраняем входящие апдейты
+        await bot.delete_webhook(drop_pending_updates=False)
+
+        # Неубиваемый цикл поллинга с авто-реконнектом
+        while True:
+            try:
+                await dp.start_polling(
+                    bot,
+                    allowed_updates=["message", "callback_query", "pre_checkout_query", "my_chat_member"]
+                )
+                break
+            except Exception as poll_err:
+                logger.error(f"Сбой соединения с Telegram ({poll_err}). Переподключение через 5 секунд...")
+                await asyncio.sleep(5)
     finally:
         await bot.session.close()
         logger.info("Сессия бота закрыта.")
