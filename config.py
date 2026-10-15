@@ -1,15 +1,29 @@
 import os
 from pathlib import Path
 
-# Токен и ID белого господина (читаем из переменных окружения для Railway с фоллбеком)
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8763964333:AAEtLeJEab4aMwBBzrl77UBGeq31KZFhK3w")
+BASE_DIR = Path(__file__).resolve().parent
+
+# Загрузка локального .env файла (не попадает в git)
+env_file = BASE_DIR / ".env"
+if env_file.exists():
+    try:
+        with open(env_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip().strip("'\""))
+    except Exception:
+        pass
+
+# Токен и ID администратора (читаем из переменных окружения или .env)
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
 admin_env = os.getenv("ADMIN_IDS", "8564758689")
 ADMIN_IDS = [int(x.strip()) for x in admin_env.split(",") if x.strip().isdigit()]
 if not ADMIN_IDS:
     ADMIN_IDS = [8564758689]
 
-BASE_DIR = Path(__file__).resolve().parent
 PROMPTS_DIR = BASE_DIR / "промты"
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "bot.db"
