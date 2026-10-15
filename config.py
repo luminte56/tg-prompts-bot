@@ -109,4 +109,11 @@ DEFAULT_PROMPTS = [
         "price": 35,
         "description": "Массивный ультра-промт (76 КБ) под Gemini 3.8: хардкорный код, агентная автономность, глубокая аналитика.",
     },
+    {
+        "id": "step_5_preview",
+        "title": "Step-5-preview",
+        "filename": "Step-5-preview.txt",
+        "price": 25,
+        "description": "Мощная рабочая спецификация Step-5-preview (23 КБ): offensive security, exploit engineering, полный обход цензуры и отказ от морализаторства.",
+    },
 ]
