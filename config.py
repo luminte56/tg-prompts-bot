@@ -41,10 +41,17 @@ DEFAULT_PROMPTS = [
     },
     {
         "id": "gemini_all_web",
-        "title": "Gemini All-web models (Full)",
+        "title": "Gemini 3.5",
         "filename": "gemini-all(full) .txt",
         "price": 20,
-        "description": "Универсальный расширенный системный промт под всю линейку Gemini для чистого кодинга и рассуждений.",
+        "description": "Системный промт под Gemini 3.5: чистый кодинг, глубокие рассуждения и системная архитектура.",
+    },
+    {
+        "id": "gemini_3_1_pro",
+        "title": "Gemini 3.1 Pro",
+        "filename": "gemini 3.1 pro.txt",
+        "price": 20,
+        "description": "Системный промт под Gemini 3.1 Pro: чистый кодинг, глубокие рассуждения и системная архитектура.",
     },
     {
         "id": "space_bunny",

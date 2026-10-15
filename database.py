@@ -114,6 +114,13 @@ async def init_db() -> None:
                     """,
                     (item["id"], item["title"], item["filename"], int(item["price"]), item["description"])
                 )
+            else:
+                await db.execute(
+                    """
+                    UPDATE prompts SET title = ?, description = ? WHERE id = ? OR filename = ?
+                    """,
+                    (item["title"], item["description"], item["id"], item["filename"])
+                )
 
         await db.commit()
 
