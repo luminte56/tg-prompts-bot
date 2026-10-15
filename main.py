@@ -56,6 +56,13 @@ async def main() -> None:
     # Запуск HTTP healthcheck сервера сразу при старте процесса
     await start_healthcheck_server()
 
+    if not BOT_TOKEN or len(BOT_TOKEN) < 20 or ":" not in BOT_TOKEN:
+        logger.critical("КРИТИЧЕСКАЯ ОШИБКА: BOT_TOKEN пустой или некорректный! Задайте BOT_TOKEN в переменных окружения.")
+        return
+
+    masked = f"{BOT_TOKEN[:10]}...{BOT_TOKEN[-5:]}"
+    logger.info(f"Запуск с токеном: {masked}")
+
     logger.info("Инициализация базы данных...")
     await db.init_db()
 
@@ -66,7 +73,11 @@ async def main() -> None:
     dp.include_router(admin_router)
     dp.include_router(user_router)
 
-    await set_bot_commands(bot)
+    try:
+        await set_bot_commands(bot)
+    except Exception as e:
+        logger.critical(f"Ошибка авторизации бота в Telegram ({e})! Токен {masked} не принят сервером. Обновите BOT_TOKEN в настройках хостинга!")
+        return
 
     logger.info("Бот запущен и готов к приему сообщений!")
     logger.info(f"Администраторы: {ADMIN_IDS}")
