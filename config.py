@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 # Токен и ID белого господина (читаем из переменных окружения для Railway с фоллбеком)
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8763964333:AAF30TTqjfrNBcMAlzutaQRL1hZ80pTD3tc")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8763964333:AAEtLeJEab4aMwBBzrl77UBGeq31KZFhK3w")
 
 admin_env = os.getenv("ADMIN_IDS", "8564758689")
 ADMIN_IDS = [int(x.strip()) for x in admin_env.split(",") if x.strip().isdigit()]
