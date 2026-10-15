@@ -19,10 +19,10 @@ if env_file.exists():
 # Токен и ID администратора (читаем из переменных окружения или .env)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
-admin_env = os.getenv("ADMIN_IDS", "8564758689")
+admin_env = os.getenv("ADMIN_IDS", "8564758689,8963645033,7396981539")
 ADMIN_IDS = [int(x.strip()) for x in admin_env.split(",") if x.strip().isdigit()]
 if not ADMIN_IDS:
-    ADMIN_IDS = [8564758689]
+    ADMIN_IDS = [8564758689, 8963645033, 7396981539]
 
 PROMPTS_DIR = BASE_DIR / "промты"
 DATA_DIR = BASE_DIR / "data"
