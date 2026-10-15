@@ -914,6 +914,10 @@ async def cb_create_promo_start(callback: CallbackQuery, state: FSMContext) -> N
 
 @router.message(AdminPromoState.waiting_for_code)
 async def process_promo_code_name(message: Message, state: FSMContext) -> None:
+    if not message.text:
+        await message.answer("❌ Отправь текстовое название промокода:")
+        return
+
     code = message.text.strip().upper()
     if len(code) < 2 or len(code) > 30:
         await message.answer("❌ Длина промокода должна быть от 2 до 30 символов. Попробуй ещё раз:")
@@ -923,10 +927,10 @@ async def process_promo_code_name(message: Message, state: FSMContext) -> None:
     await state.set_state(AdminPromoState.waiting_for_type)
 
     await message.answer(
-        f"🏷 Код: `{code}`\n\n"
-        f"**Шаг 2 из 4:** Выбери тип скидки:",
+        f"🏷 Код: <code>{html.escape(code)}</code>\n\n"
+        f"<b>Шаг 2 из 4:</b> Выбери тип скидки:",
         reply_markup=admin_promo_type_kb(),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 
@@ -937,22 +941,21 @@ async def cb_promo_type_selected(callback: CallbackQuery, state: FSMContext) -> 
     await state.set_state(AdminPromoState.waiting_for_value)
 
     if promo_type == "percent":
-        text = "📉 **Шаг 3 из 4:** Введи процент скидки (от 1 до 100):"
+        text = "📉 <b>Шаг 3 из 4:</b> Введи процент скидки (от 1 до 100):"
     else:
-        text = "⭐️ **Шаг 3 из 4:** Введи скидку в Звёздах (например: 5, 10, 20):"
+        text = "⭐️ <b>Шаг 3 из 4:</b> Введи скидку в Звёздах (например: 5, 10, 20):"
 
-    await callback.message.edit_text(text, reply_markup=cancel_kb("admin_promos_menu"), parse_mode="Markdown")
+    await callback.message.edit_text(text, reply_markup=cancel_kb("admin_promos_menu"), parse_mode="HTML")
     await callback.answer()
 
 
 @router.message(AdminPromoState.waiting_for_value)
 async def process_promo_value(message: Message, state: FSMContext) -> None:
-    text = message.text.strip()
-    if not text.isdigit():
+    if not message.text or not message.text.strip().isdigit():
         await message.answer("❌ Введи целое положительное число:")
         return
 
-    val = int(text)
+    val = int(message.text.strip())
     data = await state.get_data()
     promo_type = data.get("promo_type")
 
@@ -967,27 +970,26 @@ async def process_promo_value(message: Message, state: FSMContext) -> None:
     await state.set_state(AdminPromoState.waiting_for_max_uses)
 
     await message.answer(
-        f"📊 **Шаг 4 из 4:** Введи лимит активаций промокода.\n\n"
-        f"_(Введи конкретное число, например `50`, или `0` для неограниченного количества)_:",
+        f"📊 <b>Шаг 4 из 4:</b> Введи лимит активаций промокода.\n\n"
+        f"<i>(Введи конкретное число, например <code>50</code>, или <code>0</code> для неограниченного)</i>:",
         reply_markup=cancel_kb("admin_promos_menu"),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 
 @router.message(AdminPromoState.waiting_for_max_uses)
 async def process_promo_max_uses(message: Message, state: FSMContext) -> None:
-    text = message.text.strip()
-    if not text.isdigit():
+    if not message.text or not message.text.strip().isdigit():
         await message.answer("❌ Введи число (0 для бесконечного):")
         return
 
-    max_uses_input = int(text)
+    max_uses_input = int(message.text.strip())
     max_uses = -1 if max_uses_input == 0 else max_uses_input
 
     data = await state.get_data()
     code = data.get("promo_code")
     promo_type = data.get("promo_type")
-    val = data.get("promo_val")
+    val = data.get("promo_val", 0)
 
     percent = val if promo_type == "percent" else 0
     stars = val if promo_type == "stars" else 0
@@ -1004,12 +1006,12 @@ async def process_promo_max_uses(message: Message, state: FSMContext) -> None:
         type_str = f"{percent}%" if percent > 0 else f"{stars} ⭐️"
         limit_str = "без ограничений" if max_uses == -1 else f"{max_uses} раз"
         await message.answer(
-            f"✅ **Промокод успешно создан!**\n\n"
-            f"🏷 Код: `{code}`\n"
-            f"🎁 Скидка: **{type_str}**\n"
-            f"🔢 Лимит активаций: **{limit_str}**",
+            f"✅ <b>Промокод успешно создан!</b>\n\n"
+            f"🏷 Код: <code>{html.escape(code)}</code>\n"
+            f"🎁 Скидка: <b>{type_str}</b>\n"
+            f"🔢 Лимит активаций: <b>{limit_str}</b>",
             reply_markup=admin_promos_kb(),
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
     else:
         await message.answer("❌ Не удалось создать промокод в базе данных.", reply_markup=admin_promos_kb())
@@ -1184,16 +1186,29 @@ async def cb_broadcast_start(callback: CallbackQuery, state: FSMContext) -> None
 
 @router.message(AdminBroadcastState.waiting_for_message)
 async def process_broadcast_content(message: Message, state: FSMContext) -> None:
-    await state.update_data(broadcast_text=message.text)
+    text = message.text or message.caption
+    if not text:
+        await message.answer("❌ Отправь текстовое сообщение для рассылки:")
+        return
+
+    await state.update_data(broadcast_text=text)
     await state.set_state(AdminBroadcastState.waiting_for_confirm)
 
-    await message.answer(
-        f"📢 **Предпросмотр сообщения для рассылки:**\n\n"
-        f"{message.text}\n\n"
-        f"Отправить всем пользователям?",
-        reply_markup=admin_confirm_broadcast_kb(),
-        parse_mode="Markdown"
-    )
+    header = "📢 <b>Предпросмотр сообщения для рассылки:</b>\n\n"
+    footer = "\n\n<i>Отправить всем пользователям бота?</i>"
+
+    try:
+        await message.answer(
+            f"{header}{text}{footer}",
+            reply_markup=admin_confirm_broadcast_kb(),
+            parse_mode="HTML"
+        )
+    except Exception:
+        await message.answer(
+            f"{header}{text}{footer}",
+            reply_markup=admin_confirm_broadcast_kb(),
+            parse_mode=None
+        )
 
 
 @router.callback_query(F.data == "confirm_broadcast", AdminBroadcastState.waiting_for_confirm)
@@ -1212,22 +1227,30 @@ async def cb_confirm_broadcast(callback: CallbackQuery, state: FSMContext, bot: 
     blocked = 0
 
     for uid in user_ids:
+        sent = False
         try:
-            await bot.send_message(chat_id=uid, text=text_to_send, parse_mode="Markdown")
-            success += 1
-            await asyncio.sleep(0.05)  # Защита от флуда
-        except (TelegramForbiddenError, TelegramBadRequest):
-            blocked += 1
-            await db.set_user_blocked(uid, True)
+            await bot.send_message(chat_id=uid, text=text_to_send, parse_mode="HTML")
+            sent = True
         except Exception:
-            blocked += 1
+            try:
+                await bot.send_message(chat_id=uid, text=text_to_send, parse_mode=None)
+                sent = True
+            except (TelegramForbiddenError, TelegramBadRequest):
+                blocked += 1
+                await db.set_user_blocked(uid, True)
+            except Exception:
+                blocked += 1
+
+        if sent:
+            success += 1
+        await asyncio.sleep(0.04)  # Защита от флуда
 
     await callback.message.answer(
-        f"📢 **Рассылка завершена!**\n\n"
-        f"✅ Доставлено: `{success}`\n"
-        f"❌ Не доставлено / заблокировали бота: `{blocked}`",
+        f"📢 <b>Рассылка завершена!</b>\n\n"
+        f"✅ Доставлено: <b>{success}</b>\n"
+        f"❌ Не доставлено / заблокировали бота: <b>{blocked}</b>",
         reply_markup=admin_panel_kb(),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 
